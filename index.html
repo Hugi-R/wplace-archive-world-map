@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="description" content="Explore the Wplace World Map at any zoom level. View, download, and explore previous versions of Wplace.">
+  <meta name="keywords" content="wplace, world map, zoom, back in time, download, overlay">
+  <title>Wplace World Map</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://unpkg.com/maplibre-gl@5.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+  <style>
+    body, html { height: 100%; margin: 0; }
+    #map { position: absolute; top: 0; bottom: 0; width: 100%; }
+    #coord-input {
+      position: absolute;
+      top: 60px;
+      left: 10px;
+      z-index: 3;
+      background: rgba(255,255,255,0.8);
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-family: sans-serif;
+      font-size: 16px;
+    }
+    #version-select {
+      position: fixed;
+      left: 0;
+      right: 0;
+      top: 0;
+      z-index: 100;
+      background: rgba(255,255,255,0.95);
+      padding: 12px 12px;
+      box-sizing: border-box;
+      border-radius: 0;
+      font-family: sans-serif;
+      font-size: 17px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.10);
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      border-bottom: 1px solid #e0e0e0;
+    }
+    #zoom-level {
+      position: absolute;
+      top: 110px;
+      left: 10px;
+      z-index: 1;
+      background: rgba(255,255,255,0.8);
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-family: sans-serif;
+      font-size: 16px;
+    }
+    #overlay-toggle {
+      position: absolute;
+      top: 150px;
+      left: 10px;
+      z-index: 1;
+      background: rgba(255,255,255,0.8);
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-family: sans-serif;
+      font-size: 16px;
+    }
+    #encart {
+      position: absolute;
+      top: 200px;
+      left: 10px;
+      z-index: 20;
+      background: rgba(255,255,255,0.8);
+      border-radius: 4px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.10);
+      padding: 10px 16px 10px 16px;
+      font-family: sans-serif;
+      font-size: 16px;
+      min-width: 220px;
+      max-width: 320px;
+      border: 1px solid #e0e0e0;
+    }
+    #encart-close {
+      position: absolute;
+      top: 6px;
+      right: 10px;
+      cursor: pointer;
+      font-size: 18px;
+      color: #888;
+      transition: color 0.2s;
+    }
+    #encart-close:hover {
+      color: #333;
+    }
+    #encart-content {
+      margin-top: 2px;
+      margin-right: 18px;
+    }
+    .version-slider {
+      flex: 1;
+      margin: 0;
+    }
+    .version-tick-labels {
+      width: 100%;
+      display: flex;
+      justify-content: space-between;
+      font-size: 13px;
+      margin: 0 0 4px 0;
+    }
+    .version-tick-label {
+      flex: 1;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div id="map"></div>
+  </main>
+  <div id="encart">
+    <span id="encart-close">&times;</span>
+    <div id="encart-content">
+      <span>Data kindly provided by <a href="https://www.reddit.com/user/OkInfluence36/">u/OkInfluence36</a>.</span>
+      <span>Each zoom level halve the image resolution. The pixel is choosen by majority.</span>
+      <span>Rick-click for more tools.</span>
+    </div>
+  </div>
+  <div id="coord-input">
+    <form id="goto-coord-form" style="display:flex;gap:6px;align-items:center;">
+      <label for="coord-lat" style="font-size:15px;">Lat:</label>
+      <input id="coord-lat" type="number" step="any" style="width:80px;font-size:15px;" placeholder="Lat" required>
+      <label for="coord-lng" style="font-size:15px;">Lng:</label>
+      <input id="coord-lng" type="number" step="any" style="width:80px;font-size:15px;" placeholder="Lng" required>
+      <button type="submit" style="font-size:15px;">Go</button>
+    </form>
+  </div>
+  <div id="version-select">
+    Version:
+    <input type="range" id="wplace-version-slider" min="0" max="0" value="0" step="1" class="version-slider" list="wplace-version-ticks">
+    <span id="wplace-version-label"></span>
+  </div>
+  <div id="wplace-version-tick-labels" class="version-tick-labels"></div>
+  <datalist id="wplace-version-ticks"></datalist>
+  <div id="zoom-level">Zoom: </div>
+  <div id="overlay-toggle">
+    <label><input type="checkbox" id="toggle-tile-overlay"> Show tile overlay</label>
+  </div>
+
+  <script src="https://unpkg.com/maplibre-gl@5.7.1/dist/maplibre-gl.js"></script>
+  <script>
+    // --- Encart close handler ---
+    document.addEventListener('DOMContentLoaded', function() {
+      var encartClose = document.getElementById('encart-close');
+      var encart = document.getElementById('encart');
+      if (encartClose && encart) {
+        encartClose.onclick = function() {
+          encart.style.display = 'none';
+        };
+      }
+    });
+
+    // --- Version slider setup ---
+    // Injected from server: versions array [{version: 'v1', date: '2025-09-20'}, ...]
+    const WPLACE_VERSIONS = [
+      //$$VERSION_OPTIONS$$
+    ];
+    const versionSlider = document.getElementById('wplace-version-slider');
+    const versionLabel = document.getElementById('wplace-version-label');
+    const tickLabelsDiv = document.getElementById('wplace-version-tick-labels');
+    const tickList = document.getElementById('wplace-version-ticks');
+    versionSlider.max = WPLACE_VERSIONS.length - 1;
+    versionSlider.value = WPLACE_VERSIONS.length - 1;
+    // Add ticks and labels
+    tickList.innerHTML = '';
+    tickLabelsDiv.innerHTML = '';
+    WPLACE_VERSIONS.forEach((v, i) => {
+      const option = document.createElement('option');
+      option.value = i;
+      tickList.appendChild(option);
+      const label = document.createElement('span'); 
+      label.textContent = v.version; 
+      label.className = 'version-tick-label'; 
+      tickLabelsDiv.appendChild(label); 
+    });
+    function updateVersionLabel(idx) {
+      const v = WPLACE_VERSIONS[idx];
+      versionLabel.textContent = v ? `${v.version} (${v.date})` : '';
+    }
+    updateVersionLabel(versionSlider.value);
+    let wplaceVersion = WPLACE_VERSIONS[versionSlider.value].version;
+
+    // Function to get wplace tile URL for selected version
+    function getWplaceTileUrl(version) {
+      return `merged://tiles/${version}/{z}/{x}/{y}.png`;
+    }
+
+    // Map style generator for a given wplace version
+    function getMapStyle(version) {
+      return {
+        version: 8,
+        sources: {
+          osm: {
+            type: 'raster',
+            tiles: [
+              'https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
+              'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png',
+              'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png'
+            ],
+            minzoom: 0,
+            maxzoom: 12,
+            tileSize: 256,
+            attribution: '© OpenStreetMap contributors'
+          },
+          wplace: {
+            type: 'raster',
+            tiles: [
+              getWplaceTileUrl(version)
+            ],
+            minzoom: 0,
+            maxzoom: 11,
+            attribution: '© wplace.live'
+          }
+        },
+        layers: [
+          {
+            id: 'osm',
+            type: 'raster',
+            source: 'osm',
+            minzoom: 0,
+            maxzoom: 19
+          },
+          {
+            id: 'wplace',
+            type: 'raster',
+            source: 'wplace',
+            minzoom: 0,
+            maxzoom: 22,
+            paint: {
+              "raster-fade-duration": 0,
+              "raster-resampling": "nearest"
+            }
+          }
+        ]
+      };
+    }
+
+    // Register custom protocol
+    maplibregl.addProtocol('merged', async (params, abortControler) => {
+      const { vBase, vDiff, z, x, y } = parseTileUrl(params.url);
+      
+      // No diff version, fetch only the base
+      if (vDiff == null) {
+        const [tile] = await Promise.all([
+          fetch(`/tiles/${vBase}/${z}/${x}/${y}.png`)
+        ]);
+        if (tile.status == 200) {
+          const buffer = await tile.arrayBuffer();
+          return {data: buffer};
+        }
+        throw new Error(`Tile fetch error: ${tile.statusText}`);
+      }
+
+      // Check cache for merged tile
+      const cache = await caches.open("merged-tiles");
+      const cacheKey = `merged-tile-${vDiff}-${z}-${x}-${y}`;
+      // Try to get from cache first
+      const cachedResponse = await cache.match(cacheKey);
+      if (cachedResponse) {
+        const buffer = await cachedResponse.arrayBuffer();
+        return {data: buffer};
+      }
+
+      // Else, fetch tiles from multiple sources
+      const [tile1, tile2] = await Promise.all([
+        fetch(`/tiles/${vBase}/${z}/${x}/${y}.png`),
+        fetch(`/tiles/${vDiff}/${z}/${x}/${y}.png`)
+      ]);
+
+      if (tile1.status != 200) {
+        throw new Error(`Base tile fetch error: ${tile1.statusText}`);
+      }
+      if (tile2.status != 200) {
+        // Return only the base
+        const buffer = await tile1.arrayBuffer();
+        return {data: buffer};
+      }
+      
+      const [blob1, blob2] = await Promise.all([
+        tile1.blob(),
+        tile2.blob()
+      ]);
+      
+      // Merge tiles
+      const merged = await mergeTileBlobs(blob1, blob2);
+      const buffer = await merged.arrayBuffer();
+
+      // Store in cache
+      const responseForCache = new Response(buffer, {
+        headers: {
+          'Content-Type': 'image/png',
+          'Cache-Control': 'max-age=604800' // Cache for 7 days
+        }
+      });
+      await cache.put(cacheKey, responseForCache);
+
+      return {data: buffer};
+    });
+
+    function parseTileUrl(url) {
+      // Example: merged://tiles/version/z/x/y.png
+      const match = url.match(/.*\/([^\/]+)\/(\d+)\/(\d+)\/(\d+)\.png/);
+      if (!match) return {};
+      const version = match[1]
+      let vBase, vDiff;
+      if (version.includes('.')) {
+        vBase = version.split('.')[0];
+        vDiff = version;
+      } else {
+        vBase = version;
+        vDiff = null;
+      }
+      return {
+      vBase: vBase,
+      vDiff: vDiff,
+      z: match[2],
+      x: match[3],
+      y: match[4]
+      };
+    }
+
+    // Merge function - tile2 on top of tile1
+    async function mergeTileBlobs(blob1, blob2, options = {}) {
+      const {
+        opacity = 1.0,        // Opacity of tile2 (0.0 to 1.0)
+        blendMode = 'normal'  // Canvas composite operation
+      } = options;
+      
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      
+      // Load both images
+      const img1 = await createImageBitmap(blob1);
+      const img2 = await createImageBitmap(blob2);
+      
+      canvas.width = img1.width;
+      canvas.height = img1.height;
+      
+      // Draw tile1 (base layer)
+      ctx.drawImage(img1, 0, 0);
+      
+      // Draw tile2 on top
+      ctx.globalAlpha = opacity;
+      ctx.globalCompositeOperation = blendMode;
+      ctx.drawImage(img2, 0, 0);
+      
+      // Convert to blob
+      return new Promise(resolve => {
+        canvas.toBlob(resolve, 'image/png');
+      });
+    }
+
+    // Create map
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: getMapStyle(wplaceVersion),
+      center: [0, 0],
+      zoom: 2
+    });
+
+    // Display and update zoom level
+    const zoomDiv = document.getElementById('zoom-level');
+    function updateZoom() {
+      zoomDiv.textContent = 'Zoom: ' + map.getZoom().toFixed(2);
+    }
+    map.on('zoom', updateZoom);
+    map.on('load', updateZoom);
+
+    // Handle version slider change
+    versionSlider.addEventListener('input', function(e) {
+      const idx = parseInt(e.target.value);
+      wplaceVersion = WPLACE_VERSIONS[idx].version;
+      updateVersionLabel(idx);
+      map.setStyle(getMapStyle(wplaceVersion));
+      map.once('styledata', updateZoom);
+      map.once('styledata', drawTileOverlay);
+    });
+
+    // --- Custom Right-Click Menu ---
+    // Create menu element
+    const menu = document.createElement('div');
+    menu.id = 'context-menu';
+    menu.style.position = 'absolute';
+    menu.style.display = 'none';
+    menu.style.zIndex = '10';
+    menu.style.background = 'rgba(255,255,255,0.95)';
+    menu.style.border = '1px solid #ccc';
+    menu.style.borderRadius = '6px';
+    menu.style.boxShadow = '0 2px 8px rgba(0,0,0,0.15)';
+    menu.style.padding = '8px 0';
+    menu.style.fontFamily = 'sans-serif';
+    menu.style.fontSize = '15px';
+    menu.innerHTML = `
+      <div id="download-tile" style="padding:8px 24px;cursor:pointer;">Download tile</div>
+      <div id="go-wplace-live" style="padding:8px 24px;cursor:pointer;">Go wplace.live</div>
+    `;
+    document.body.appendChild(menu);
+
+    let lastTileCoords = null;
+    let lastClickCoords = null;
+
+    // Helper: get tile coordinates for a given lngLat and zoom
+    function getTileCoords(lngLat, zoom) {
+      const z = Math.floor(zoom);
+      const x = Math.floor((lngLat.lng + 180) / 360 * Math.pow(2, z));
+      const y = Math.floor((1 - Math.log(Math.tan(lngLat.lat * Math.PI / 180) + 1 / Math.cos(lngLat.lat * Math.PI / 180)) / Math.PI) / 2 * Math.pow(2, z));
+      return { z, x, y };
+    }
+
+    // Show menu on right-click
+    map.getContainer().addEventListener('contextmenu', function(e) {
+      e.preventDefault();
+      // Get map coordinates
+      const rect = map.getContainer().getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      const lngLat = map.unproject([px, py]);
+      const zoom = map.getZoom();
+      lastTileCoords = getTileCoords(lngLat, zoom);
+      lastClickCoords = { lat: lngLat.lat, lng: lngLat.lng, zoom: zoom };
+      // Position menu
+      menu.style.left = e.clientX + 'px';
+      menu.style.top = e.clientY + 'px';
+      menu.style.display = 'block';
+    });
+
+    // Hide menu on click elsewhere
+    document.addEventListener('click', function(e) {
+      if (menu.style.display === 'block' && !menu.contains(e.target)) {
+        menu.style.display = 'none';
+      }
+    });
+
+    // Download tile handler
+    document.getElementById('download-tile').addEventListener('click', function() {
+      if (!lastTileCoords) return;
+      const { z, x, y } = lastTileCoords;
+      const url = `/tiles/${wplaceVersion}/${z}/${x}/${y}.png`;
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `tile-${wplaceVersion}-${z}-${x}-${y}.png`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      menu.style.display = 'none';
+    });
+
+    document.getElementById('go-wplace-live').addEventListener('click', function() {
+      if (!lastClickCoords) return;
+      const { lat, lng, zoom } = lastClickCoords;
+      const url = `https://wplace.live/?lat=${lat}&lng=${lng}&zoom=${zoom}`;
+      window.open(url, '_blank');
+      menu.style.display = 'none';
+    });
+
+    // --- Coordinate Input Handler ---
+    document.getElementById('goto-coord-form').addEventListener('submit', function(e) {
+      e.preventDefault();
+      const lat = parseFloat(document.getElementById('coord-lat').value);
+      const lng = parseFloat(document.getElementById('coord-lng').value);
+      if (isNaN(lat) || isNaN(lng)) return;
+      map.flyTo({ center: [lng, lat], zoom: 10 });
+    });
+
+    // --- Canvas Overlay Setup ---
+    let canvas, overlayToggle;
+    map.on('load', function() {
+      const mapContainer = document.getElementById('map');
+      canvas = document.createElement('canvas');
+      canvas.id = 'tile-overlay-canvas';
+      canvas.style.position = 'absolute';
+      canvas.style.top = '0';
+      canvas.style.left = '0';
+      canvas.style.width = '100%';
+      canvas.style.height = '100%';
+      canvas.style.pointerEvents = 'none';
+      canvas.style.zIndex = '5';
+      mapContainer.appendChild(canvas);
+
+      function resizeCanvas() {
+        canvas.width = mapContainer.offsetWidth;
+        canvas.height = mapContainer.offsetHeight;
+      }
+      window.addEventListener('resize', resizeCanvas);
+      map.on('resize', resizeCanvas);
+      resizeCanvas();
+
+      // --- Overlay Toggle ---
+      overlayToggle = document.getElementById('toggle-tile-overlay');
+      function setOverlayVisibility() {
+        canvas.style.display = overlayToggle.checked ? 'block' : 'none';
+      }
+      overlayToggle.addEventListener('change', setOverlayVisibility);
+      setOverlayVisibility();
+
+      // --- Draw Tile Overlay ---
+      function lng2tileX(lng, z) {
+        return Math.floor((lng + 180) / 360 * Math.pow(2, z));
+      }
+      function lat2tileY(lat, z) {
+        const rad = lat * Math.PI / 180;
+        return Math.floor((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * Math.pow(2, z));
+      }
+      function tile2lng(x, z) {
+        return x / Math.pow(2, z) * 360 - 180;
+      }
+      function tile2lat(y, z) {
+        const n = Math.PI - 2 * Math.PI * y / Math.pow(2, z);
+        return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+      }
+
+      function drawTileOverlay() {
+        if (!overlayToggle.checked) return;
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const zoom = Math.min(Math.floor(map.getZoom()), 11);
+        const bounds = map.getBounds();
+        const tileCount = Math.pow(2, zoom);
+        // Calculate visible tile range
+        const minX = Math.max(0, lng2tileX(bounds.getWest(), zoom));
+        const maxX = Math.min(tileCount - 1, lng2tileX(bounds.getEast(), zoom));
+        const minY = Math.max(0, lat2tileY(bounds.getNorth(), zoom));
+        const maxY = Math.min(tileCount - 1, lat2tileY(bounds.getSouth(), zoom));
+        for (let x = minX; x <= maxX; x++) {
+          for (let y = minY; y <= maxY; y++) {
+            // Get tile bounds in lng/lat
+            const west = tile2lng(x, zoom);
+            const east = tile2lng(x + 1, zoom);
+            const north = tile2lat(y, zoom);
+            const south = tile2lat(y + 1, zoom);
+            // Project to pixel
+            const p1 = map.project([west, north]);
+            const p2 = map.project([east, south]);
+            // Draw rectangle
+            ctx.strokeStyle = 'rgba(0,0,255,0.5)';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
+            // Draw ID
+            ctx.fillStyle = 'rgba(0,0,255,0.7)';
+            ctx.font = '12px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            const id = `${x},${y},${zoom}`;
+            ctx.fillText(id, (p1.x + p2.x) / 2, (p1.y + p2.y) / 2);
+          }
+        }
+      }
+
+      // --- Redraw overlay on map events ---
+      map.on('move', drawTileOverlay);
+      map.on('zoom', drawTileOverlay);
+      map.on('resize', drawTileOverlay);
+      map.on('styledata', drawTileOverlay);
+      document.getElementById('wplace-version').addEventListener('change', drawTileOverlay);
+      overlayToggle.addEventListener('change', drawTileOverlay);
+      // Initial draw
+      drawTileOverlay();
+      // Redraw overlay after style change
+      map.once('styledata', drawTileOverlay);
+    });
+  </script>
+</body>
+</html>
