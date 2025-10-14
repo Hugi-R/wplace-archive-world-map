@@ -29,7 +29,9 @@ This is what's behind [wplace.eralyon.net](https://wplace.eralyon.net/).
 
 ### Ingest
 Ingest an archive into a DB. PNGs are converted to the palette used by this project.
-**Currently only 7z archives are supported.**
+**Currently only folder or 7z archives are supported.**
+
+The files inside the archive should be like `*/X/Y.png` where X and Y are coordinates of the tile.
 
 ```shell
 ./bin/ingest --from wplace-archives/tiles-1_2025-08-29H18.7z --out data/tiles-1.db --workers 16

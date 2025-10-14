@@ -37,6 +37,12 @@ type Job struct {
 	Crc32   uint32
 }
 
+type Reader interface {
+	ReadNextGood() (Job, bool, error)
+	Open(string) error
+	Close() error
+}
+
 func (m *metrics) Read() {
 	m.read.Add(1)
 }
