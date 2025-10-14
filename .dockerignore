@@ -2,9 +2,10 @@
 *
 
 # Allow files and directories
-!/backend
-!/img
-!/merger
 !go.mod
 !go.sum
-!Dockerfile
+!/img
+!/merger
+!/store
+!/tileserver
+!/metadatadb
