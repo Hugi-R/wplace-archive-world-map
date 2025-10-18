@@ -227,6 +227,16 @@
     maplibregl.addProtocol('merged', async (params, abortControler) => {
       const { vBase, vDiff, z, x, y } = parseTileUrl(params.url);
       
+      // Check cache for merged tile
+      const cache = await caches.open("merged-tiles");
+      const cacheKey = `tile-${vDiff ? vDiff : vBase}-${z}-${x}-${y}`;
+      // Try to get from cache first
+      const cachedResponse = await cache.match(cacheKey);
+      if (cachedResponse) {
+        const buffer = await cachedResponse.arrayBuffer();
+        return {data: buffer};
+      }
+
       // No diff version, fetch only the base
       if (vDiff == null) {
         const [tile] = await Promise.all([
@@ -234,19 +244,19 @@
         ]);
         if (tile.status == 200) {
           const buffer = await tile.arrayBuffer();
+
+          // Store in cache
+          const responseForCache = new Response(buffer, {
+            headers: {
+              'Content-Type': 'image/png',
+              'Cache-Control': 'max-age=604800' // Cache for 7 days
+            }
+          });
+          await cache.put(cacheKey, responseForCache);
+
           return {data: buffer};
         }
         throw new Error(`Tile fetch error: ${tile.statusText}`);
-      }
-
-      // Check cache for merged tile
-      const cache = await caches.open("merged-tiles");
-      const cacheKey = `merged-tile-${vDiff}-${z}-${x}-${y}`;
-      // Try to get from cache first
-      const cachedResponse = await cache.match(cacheKey);
-      if (cachedResponse) {
-        const buffer = await cachedResponse.arrayBuffer();
-        return {data: buffer};
       }
 
       // Else, fetch tiles from multiple sources
@@ -361,7 +371,6 @@
       updateVersionLabel(idx);
       map.setStyle(getMapStyle(wplaceVersion));
       map.once('styledata', updateZoom);
-      map.once('styledata', drawTileOverlay);
     });
 
     // --- Custom Right-Click Menu ---
@@ -403,7 +412,7 @@
       const px = e.clientX - rect.left;
       const py = e.clientY - rect.top;
       const lngLat = map.unproject([px, py]);
-      const zoom = map.getZoom();
+      const zoom = Math.min(map.getZoom(), 11);
       lastTileCoords = getTileCoords(lngLat, zoom);
       lastClickCoords = { lat: lngLat.lat, lng: lngLat.lng, zoom: zoom };
       // Position menu
@@ -420,17 +429,28 @@
     });
 
     // Download tile handler
-    document.getElementById('download-tile').addEventListener('click', function() {
+    document.getElementById('download-tile').addEventListener('click', async function() {
       if (!lastTileCoords) return;
       const { z, x, y } = lastTileCoords;
-      const url = `/tiles/${wplaceVersion}/${z}/${x}/${y}.png`;
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `tile-${wplaceVersion}-${z}-${x}-${y}.png`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      menu.style.display = 'none';
+      
+      // Get tile from cache
+      const cache = await caches.open("merged-tiles");
+      const cacheKey = `tile-${wplaceVersion}-${z}-${x}-${y}`;
+      const cachedResponse = await cache.match(cacheKey);
+      if (cachedResponse) {
+        const blob = await cachedResponse.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${wplaceVersion}-${z}-${x}-${y}.png`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        menu.style.display = 'none';    
+      } else {
+        alert('Tile not found in cache. Maybe the tile is empty?');
+      }
     });
 
     document.getElementById('go-wplace-live').addEventListener('click', function() {
@@ -538,7 +558,6 @@
       map.on('move', drawTileOverlay);
       map.on('zoom', drawTileOverlay);
       map.on('resize', drawTileOverlay);
-      map.on('styledata', drawTileOverlay);
       document.getElementById('wplace-version').addEventListener('change', drawTileOverlay);
       overlayToggle.addEventListener('change', drawTileOverlay);
       // Initial draw
