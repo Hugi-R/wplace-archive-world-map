@@ -48,7 +48,7 @@ func main() {
 		fmt.Printf("Starting merging tiles from z=%d using %d workers. Using %s as base.\n", *initZ, *workers, *base)
 	}
 
-	merger, err := merger.NewMerger(&tileDB, *workers, *initZ, true, baseDB)
+	merger, err := merger.NewMerger(&tileDB, *workers, *initZ, false, baseDB)
 	if err != nil {
 		fmt.Println("Failed to create merger:", err)
 		return

@@ -28,7 +28,7 @@ COPY --from=builder /app/merge.exe /app/ingest.exe /app/tileserver.exe /app/meta
 FROM scratch AS linux
 COPY --from=builder /app/merge /app/ingest /app/tileserver /app/meta /
 
-FROM gcr.io/distroless/base-debian12
+FROM gcr.io/distroless/base-debian12 as tileserver
 COPY --chmod=0755 --from=builder /app/tileserver /
 ENV PORT=8080
 ENV DATA_PATH=/data

@@ -28,9 +28,10 @@ type Run struct {
 
 // HTTPConfig holds configuration for HTTP requests
 type HTTPConfig struct {
-	URL      string
-	Username string
-	Password string
+	ArchiveURL string
+	LogsURL    string
+	Username   string
+	Password   string
 }
 
 // MetadataDB handles SQLite operations
@@ -153,7 +154,7 @@ func (dbm *MetadataDB) ListFilesFromHTTP() ([]string, error) {
 	client := &http.Client{}
 
 	// Try to get directory listing by requesting the base URL
-	req, err := http.NewRequest("GET", dbm.config.URL, nil)
+	req, err := http.NewRequest("GET", dbm.config.LogsURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -250,7 +251,7 @@ func (dbm *MetadataDB) ImportFromHTTP(files []string) error {
 	client := &http.Client{}
 
 	for _, filename := range files {
-		url := dbm.config.URL + "/" + filename
+		url := dbm.config.LogsURL + "/" + filename
 
 		req, err := http.NewRequest("GET", url, nil)
 		if err != nil {
@@ -419,9 +420,10 @@ func ProcessedVersionFromDate(datetime time.Time) string {
 func main() {
 	// Jazza's creds are available on their repo
 	httpConfig := &HTTPConfig{
-		URL:      os.Getenv("JAZZA_URL"),
-		Username: os.Getenv("JAZZA_USER"),
-		Password: os.Getenv("JAZZA_PASSW"),
+		ArchiveURL: os.Getenv("JAZZA_URL"),
+		LogsURL:    os.Getenv("JAZZA_LOGS_URL"),
+		Username:   os.Getenv("JAZZA_USER"),
+		Password:   os.Getenv("JAZZA_PASSW"),
 	}
 
 	dbm, err := NewMetadataDBWithConfig("metadata.db", httpConfig)
@@ -430,9 +432,12 @@ func main() {
 	}
 	defer dbm.Close()
 
-	archivesFolder := os.Getenv("META_ARCHIVES_FOLDER")
-	processedFolder := os.Getenv("META_PROCESSED_FOLDER")
-	dbm.SetFolders(archivesFolder, processedFolder)
+	workFolder := os.Getenv("META_WORK_FOLDER")
+	doneFolder := os.Getenv("META_DONE_FOLDER")
+	tmpProcessedFolder := path.Join(workFolder, "processed")
+	archivesFolder := path.Join(workFolder, "archives")
+
+	dbm.SetFolders(archivesFolder, doneFolder)
 
 	err = dbm.ImportMissingFiles()
 	if err != nil {
@@ -443,18 +448,37 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	planCommands := "#!/bin/bash\nset -e\n\n"
 	for _, p := range plan {
-		if p.archiveFileExists && p.processedFileExists {
+		if p.processedFileExists {
 			continue
 		}
 
 		base := ""
 		if p.isDiff {
-			base = fmt.Sprintf("--base %s", path.Join(processedFolder, p.base))
+			base = fmt.Sprintf("--base %s", path.Join(doneFolder, p.base))
 		}
-		from := path.Join(archivesFolder, p.archiveFile)
-		out := path.Join(processedFolder, p.processedFile)
-		command := fmt.Sprintf("./ingest %s --from %s --out %s", base, from, out)
-		fmt.Println(command)
+		archive := path.Join(archivesFolder, p.archiveFile)
+		from := path.Join("/dev/shm/wplace-tmpdata", strings.TrimSuffix(p.archiveFile, ".7z"))
+		out := path.Join(tmpProcessedFolder, p.processedFile)
+
+		if !p.archiveFileExists {
+			planCommands += fmt.Sprintf("curl -u '%s:%s' -o %s %s/%s\n", httpConfig.Username, httpConfig.Password, archive, httpConfig.ArchiveURL, p.archiveFile)
+		}
+		planCommands += fmt.Sprintf("rm -rf /dev/shm/wplace-tmpdata/ && mkdir /dev/shm/wplace-tmpdata && 7z x %s -o/dev/shm/wplace-tmpdata/\n", archive)
+		planCommands += fmt.Sprintf("./ingest %s --from %s --out %s\n", base, from, out)
+		planCommands += "rm -rf /dev/shm/wplace-tmpdata/\n"
+		planCommands += fmt.Sprintf("rm %s\n", archive)
+		planCommands += fmt.Sprintf("./merge %s --target %s\n", base, out)
+		planCommands += fmt.Sprintf("sqlite3 %s 'PRAGMA journal_mode = DELETE;'\n", out)
+		planCommands += fmt.Sprintf("mv %s %s\n", out, path.Join(doneFolder, p.processedFile))
+		planCommands += "\n"
 	}
+	planCommands += "echo 'All done!'\n"
+
+	err = os.WriteFile("plan.sh", []byte(planCommands), 0755)
+	if err != nil {
+		log.Fatalf("Failed to write plan.sh: %v", err)
+	}
+	log.Println("Plan written to plan.sh")
 }
