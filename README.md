@@ -31,15 +31,21 @@ This is what's behind [wplace.eralyon.net](https://wplace.eralyon.net/).
 Ingest an archive into a DB. PNGs are converted to the palette used by this project.
 **Currently only folder or 7z archives are supported.**
 
+> For best speed, it's recommended to extract the erchive on a RAM based FS (eg: /dev/shm), and run the ingest on that. But be careful on RAM usage!
+> ```shell
+> 7z x tiles-1.7z -o/dev/shm/wplace-tmpdata/
+> ./bin/ingest --from /dev/shm/wplace-tmpdata/tiles-1 --out data/tiles-1.db
+> ```
+
 The files inside the archive should be like `*/X/Y.png` where X and Y are coordinates of the tile.
 
 ```shell
-./bin/ingest --from wplace-archives/tiles-1_2025-08-29H18.7z --out data/tiles-1.db --workers 16
+./bin/ingest --from wplace-archives/tiles-1.7z --out data/tiles-1.db --workers 16
 ```
 
 Ingest can build an incremental DB containing only the changed pixels compared to a base DB:
 ```shell
-./bin/ingest --base data/tiles-1.db --from wplace-archives/tiles-2_2025-08-30H00.7z --out data/tiles-2.db --workers 16
+./bin/ingest --base data/tiles-1.db --from wplace-archives/tiles-2.7z --out data/tiles-2.db --workers 16
 ```
 This saves a lot of storage, and speeds up ingest when few tiles change. When many tiles change, ingest can be slower due to the extra compute required for diffs.
 
@@ -57,12 +63,12 @@ Create tiles for other zoom levels. Recursively merge and resize tiles (from lev
 This significantly increases the size of the DB.
 
 ```shell
-./bin/merger --target data/tiles-1.db --workers 16 --initz 10
+./bin/merge --target data/tiles-1.db --workers 16 --initz 10
 ```
 
 This also works on diff'ed DBs, where the base should have been merged first:
 ```shell
-./bin/merger --base data/tiles-1.db --target data/tiles-2.db --workers 16 --initz 10
+./bin/merge --base data/tiles-1.db --target data/tiles-2.db --workers 16 --initz 10
 ```
 
 |     | tiles-1.db | tiles-2.db |
@@ -83,6 +89,24 @@ mv data/tiles-2.db data/v1.01_2025-08-30H00.db
 DATA_PATH=./data ./bin/tileserver
 ```
 The server is available at `http://localhost:8080`.
+
+### MetadataDB
+List available archives from [Jazza-231/wplace-scripts](https://github.com/Jazza-231/wplace-scripts), and build a `plan.sh` to import them.
+Only the missing archives are imported.
+
+This will produce the exact same files as used by [wplace.eralyon.net](https://wplace.eralyon.net/):
+```shell
+export META_WORK_FOLDER="./wplace-work"
+export META_DONE_FOLDER="./website/live"
+export JAZZA_URL="<URL>"
+export JAZZA_LOGS_URL="${JAZZA_URL}$/logs"
+export JAZZA_USER="<USER>"
+export JAZZA_PASSW="<PASSWORD>"
+
+./bin/meta
+
+# ./plan.sh
+```
 
 ## Disclaimer
 - This is a cleaned-up version of a bunch of experiments. Documentation and tests are sparse, and will likely remain so.
