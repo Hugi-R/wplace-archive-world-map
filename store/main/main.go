@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/Hugi-R/wplace-archive-world-map/store"
 )
@@ -20,7 +21,7 @@ func isDir(path string) bool {
 	return false
 }
 
-func main() {
+func Main() error {
 	base := flag.String("base", "", "Optional base DB path")
 	from := flag.String("from", "", "Mandatory from path (folder or 7z)")
 	out := flag.String("out", "", "Mandatory out DB path")
@@ -30,18 +31,15 @@ func main() {
 
 	// Check mandatory flags
 	if *from == "" {
-		fmt.Fprintln(os.Stderr, "Error: --from is required")
-		os.Exit(1)
+		return fmt.Errorf("missing required flag: --from")
 	}
 	if *out == "" {
-		fmt.Fprintln(os.Stderr, "Error: --out is required")
-		os.Exit(1)
+		return fmt.Errorf("missing required flag: --out")
 	}
 
-	tileDB, err := store.NewTileDB(*out)
+	tileDB, err := store.NewTileDB(*out, false)
 	if err != nil {
-		fmt.Printf("Failed to create tile database: %v\n", err)
-		return
+		return fmt.Errorf("failed to create tile database %s: %w", *out, err)
 	}
 	defer tileDB.DB.Close()
 
@@ -51,21 +49,17 @@ func main() {
 	} else if isDir(*from) {
 		reader = &store.ReaderFolder{}
 	} else {
-		fmt.Printf("%s not supported format", *from)
-		return
+		return fmt.Errorf("unsupported input format: %s", *from)
 	}
-	err = reader.Open(*from)
-	if err != nil {
-		fmt.Printf("Failed to read: %v\n", err)
-		return
+	if err := reader.Open(*from); err != nil {
+		return fmt.Errorf("failed to open input %s: %w", *from, err)
 	}
 	defer reader.Close()
 
 	if *base != "" {
-		baseDB, err := store.NewTileDB(*base)
+		baseDB, err := store.NewTileDB(*base, true)
 		if err != nil {
-			fmt.Printf("Failed to create tile database: %v\n", err)
-			return
+			return fmt.Errorf("failed to open base tile database %s: %w", *base, err)
 		}
 		defer baseDB.DB.Close()
 		ingester := store.NewDiffIngester(tileDB, *workers, false, baseDB)
@@ -75,4 +69,16 @@ func main() {
 		ingester.Ingest(reader.ReadNextGood)
 	}
 	fmt.Println("Done")
+	return nil
+}
+
+func main() {
+	start := time.Now()
+	err := Main()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	elapsed := time.Since(start)
+	fmt.Printf("Elapsed time: %s\n", elapsed)
 }

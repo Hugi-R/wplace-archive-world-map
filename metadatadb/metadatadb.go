@@ -449,6 +449,9 @@ func main() {
 		panic(err)
 	}
 	planCommands := "#!/bin/bash\nset -e\n\n"
+	planCommands += fmt.Sprintf("mkdir -p %s\n", tmpProcessedFolder)
+	planCommands += fmt.Sprintf("mkdir -p %s\n", archivesFolder)
+	planCommands += "\n"
 	for _, p := range plan {
 		if p.processedFileExists {
 			continue

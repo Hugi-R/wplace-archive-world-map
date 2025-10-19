@@ -16,6 +16,7 @@ const defaultDbPath = "./tiles.db"
 const sqliteBusyTimeout = 20
 
 type TileDB struct {
+	readOnly bool
 	DB       *sql.DB
 	stmtPut  *sql.Stmt
 	stmtGet  *sql.Stmt
@@ -25,15 +26,24 @@ type TileDB struct {
 }
 
 func (db *TileDB) PutTile(z, x, y int, data []byte, crc32 uint32) error {
+	if db.readOnly {
+		return fmt.Errorf("database is read-only")
+	}
 	return db.putWithRetry(z, x, y, data, crc32, 5)
 }
 
 func (db *TileDB) PutTileAutoCRC(z, x, y int, data []byte) error {
+	if db.readOnly {
+		return fmt.Errorf("database is read-only")
+	}
 	crc32 := hcrc.ChecksumIEEE(data)
 	return db.putWithRetry(z, x, y, data, crc32, 5)
 }
 
 func (db *TileDB) putWithRetry(z, x, y int, data []byte, crc32 uint32, retries int) error {
+	if db.readOnly {
+		return fmt.Errorf("database is read-only")
+	}
 	for i := 0; i < retries; i++ {
 		_, err := db.stmtPut.Exec(z, x, y, crc32, data)
 		if err == nil {
@@ -66,6 +76,9 @@ func (db *TileDB) StatTile(z, x, y int) (exists bool, crc uint32, err error) {
 }
 
 func (db *TileDB) SetCRC(z, x, y int, crc32 uint32) error {
+	if db.readOnly {
+		return fmt.Errorf("database is read-only")
+	}
 	_, err := db.stmtCrc.Exec(crc32, z, x, y)
 	if err != nil {
 		return err
@@ -102,6 +115,21 @@ func (db *TileDB) init() error {
 		return fmt.Errorf("failed to set busy_timeout: %w", err)
 	}
 
+	if !db.readOnly {
+		// Initialize for write
+		err = db.initWrite()
+		if err != nil {
+			return fmt.Errorf("failed to initialize database for write: %w", err)
+		}
+	}
+
+	// Prepare statements
+	return db.prepareStmt()
+}
+
+func (db *TileDB) initWrite() error {
+	var err error
+
 	// Enable WAL mode for better concurrency
 	_, err = db.DB.Exec("PRAGMA journal_mode = WAL")
 	if err != nil {
@@ -125,17 +153,11 @@ func (db *TileDB) init() error {
 	if err != nil {
 		return fmt.Errorf("failed to ensure schema: %w", err)
 	}
-
-	// Prepare statements
-	return db.prepareStmt()
+	return nil
 }
 
 func (db *TileDB) prepareStmt() error {
 	var err error
-	db.stmtPut, err = db.DB.Prepare(`INSERT INTO tiles (z, x, y, crc32, data) VALUES (?, ?, ?, ?, ?) ON CONFLICT(z, x, y) DO UPDATE SET data=excluded.data,crc32=excluded.crc32`)
-	if err != nil {
-		return fmt.Errorf("failed to prepare put statement: %w", err)
-	}
 	db.stmtGet, err = db.DB.Prepare(`SELECT data FROM tiles WHERE z = ? AND x = ? AND y = ?`)
 	if err != nil {
 		return fmt.Errorf("failed to prepare get statement: %w", err)
@@ -144,29 +166,43 @@ func (db *TileDB) prepareStmt() error {
 	if err != nil {
 		return fmt.Errorf("failed to prepare stat statement: %w", err)
 	}
-	db.stmtCrc, err = db.DB.Prepare(`UPDATE tiles SET crc32 = ? WHERE z = ? AND x = ? AND y = ?`)
-	if err != nil {
-		return fmt.Errorf("failed to prepare stat statement: %w", err)
-	}
 	db.stmList, err = db.DB.Prepare(`SELECT x, y FROM tiles WHERE z = ?`)
 	if err != nil {
 		return fmt.Errorf("failed to prepare stat statement: %w", err)
+	}
+	if !db.readOnly {
+		db.stmtPut, err = db.DB.Prepare(`INSERT INTO tiles (z, x, y, crc32, data) VALUES (?, ?, ?, ?, ?) ON CONFLICT(z, x, y) DO UPDATE SET data=excluded.data,crc32=excluded.crc32`)
+		if err != nil {
+			return fmt.Errorf("failed to prepare put statement: %w", err)
+		}
+		db.stmtCrc, err = db.DB.Prepare(`UPDATE tiles SET crc32 = ? WHERE z = ? AND x = ? AND y = ?`)
+		if err != nil {
+			return fmt.Errorf("failed to prepare stat statement: %w", err)
+		}
 	}
 	return nil
 }
 
 func (db *TileDB) Close() {
-	_, err := db.DB.Exec("PRAGMA journal_mode = DELETE") // revert to the default behavior
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to revert journaling to non WAL: %v", err)
-	}
-	db.stmtPut.Close()
 	db.stmtGet.Close()
 	db.stmtStat.Close()
+	db.stmList.Close()
+	if !db.readOnly {
+		db.stmtPut.Close()
+		db.stmtCrc.Close()
+		_, err := db.DB.Exec("PRAGMA wal_checkpoint(TRUNCATE)") // ensure WAL is merged
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to checkpoint WAL: %v", err)
+		}
+		_, err = db.DB.Exec("PRAGMA journal_mode = DELETE") // revert to the default behavior
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to revert journaling to non WAL: %v", err)
+		}
+	}
 	db.DB.Close()
 }
 
-func NewTileDB(dbPath string) (TileDB, error) {
+func NewTileDB(dbPath string, readOnly bool) (TileDB, error) {
 	if dbPath == "" {
 		dbPath = defaultDbPath
 	}
@@ -174,7 +210,7 @@ func NewTileDB(dbPath string) (TileDB, error) {
 	if err != nil {
 		return TileDB{}, fmt.Errorf("failed to open database: %w", err)
 	}
-	tileDB := TileDB{DB: db}
+	tileDB := TileDB{DB: db, readOnly: readOnly}
 	if err := tileDB.init(); err != nil {
 		db.Close()
 		return TileDB{}, err

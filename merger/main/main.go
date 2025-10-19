@@ -10,7 +10,7 @@ import (
 	"github.com/Hugi-R/wplace-archive-world-map/store"
 )
 
-func main() {
+func Main() error {
 
 	base := flag.String("base", "", "Optional base DB path")
 	target := flag.String("target", "", "Mandatory from path")
@@ -21,23 +21,20 @@ func main() {
 
 	// Check mandatory flags
 	if *target == "" {
-		fmt.Fprintln(os.Stderr, "Error: --from is required")
-		os.Exit(1)
+		return fmt.Errorf("missing required flag: --from")
 	}
 
-	tileDB, err := store.NewTileDB(*target)
+	tileDB, err := store.NewTileDB(*target, false)
 	if err != nil {
-		fmt.Printf("Failed to create tile database: %v\n", err)
-		return
+		return fmt.Errorf("failed to create target tile database: %v", err)
 	}
 	defer tileDB.DB.Close()
 
 	var baseDB *store.TileDB = nil
 	if *base != "" {
-		db, err := store.NewTileDB(*base)
+		db, err := store.NewTileDB(*base, true)
 		if err != nil {
-			fmt.Printf("Failed to create tile database: %v\n", err)
-			return
+			return fmt.Errorf("failed to create base tile database: %v", err)
 		}
 		baseDB = &db
 	}
@@ -50,15 +47,24 @@ func main() {
 
 	merger, err := merger.NewMerger(&tileDB, *workers, *initZ, false, baseDB)
 	if err != nil {
-		fmt.Println("Failed to create merger:", err)
-		return
+		return fmt.Errorf("failed to create merger: %v", err)
 	}
 	merger.Merge()
-	// Wait for sqlite to cool down (WAL)
-	time.Sleep(3 * time.Second)
 	if baseDB != nil {
 		baseDB.Close()
 	}
 	tileDB.Close()
 	fmt.Println("Done")
+	return nil
+}
+
+func main() {
+	start := time.Now()
+	err := Main()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	elapsed := time.Since(start)
+	fmt.Printf("Elapsed time: %s\n", elapsed)
 }
