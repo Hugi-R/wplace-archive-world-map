@@ -1,5 +1,4 @@
 // List available archive from a source, and plan the ingest, excluding works already done
-// Currently only support Jazza's archives
 package main
 
 import (
@@ -9,29 +8,59 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
-	"path/filepath"
 	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// Run represents the structure of your JSON data
-type Run struct {
-	Started        time.Time `json:"started"`
-	Finished       time.Time `json:"finished"`
-	TotalFilesMade int       `json:"totalFilesMade"`
-	ArchiveIndex   int       `json:"archiveIndex"`
+// githubRelease is a small helper type for the GitHub API response we use.
+type githubRelease struct {
+	Name      string    `json:"name"`
+	ID        int       `json:"id"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Assets    []Asset   `json:"assets"`
+}
+
+type Archive struct {
+	Name             string
+	ID               int
+	Datetime         time.Time
+	LastUpdated      time.Time
+	Assets           []Asset
+	ProcessedVersion string
+}
+
+type Asset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+}
+
+func AssetsFromJson(data string) ([]Asset, error) {
+	var assets []Asset
+	err := json.Unmarshal([]byte(data), &assets)
+	if err != nil {
+		log.Printf("Failed to unmarshal assets JSON: %v", err)
+		return nil, err
+	}
+	return assets, nil
+}
+
+func AssetsToJson(assets []Asset) (string, error) {
+	data, err := json.Marshal(assets)
+	if err != nil {
+		log.Printf("Failed to marshal assets to JSON: %v", err)
+		return "[]", err
+	}
+	return string(data), nil
 }
 
 // HTTPConfig holds configuration for HTTP requests
 type HTTPConfig struct {
 	ArchiveURL string
-	LogsURL    string
-	Username   string
-	Password   string
 }
 
 // MetadataDB handles SQLite operations
@@ -79,12 +108,12 @@ func (dbm *MetadataDB) initTable() error {
 	createTableSQL := `
 	CREATE TABLE IF NOT EXISTS runs (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		logfile TEXT NOT NULL,
+		name TEXT NOT NULL,
 		started TEXT NOT NULL,
 		finished TEXT NOT NULL,
-		total_files_made INTEGER NOT NULL,
-		archive_index INTEGER NOT NULL,
-		processed_version TEXT
+		release_id INTEGER NOT NULL,
+		processed_version TEXT,
+		assets JSON
 	);`
 
 	_, err := dbm.db.Exec(createTableSQL)
@@ -92,24 +121,28 @@ func (dbm *MetadataDB) initTable() error {
 }
 
 // SaveRun inserts a run record into the database
-func (dbm *MetadataDB) SaveRun(logfile string, run Run) error {
+func (dbm *MetadataDB) SaveRun(archive Archive) error {
 	insertSQL := `
 	INSERT INTO runs (
-		logfile,
+		name,
 		started,
 		finished,
-		total_files_made,
-		archive_index,
-		processed_version
-	) VALUES (?, ?, ?, ?, ?, ?)`
+		release_id,
+		processed_version,
+		assets
+	) VALUES (?, ?, ?, ?, ?, ?);`
 
-	_, err := dbm.db.Exec(insertSQL,
-		logfile,
-		run.Started.Format(time.RFC3339),
-		run.Finished.Format(time.RFC3339),
-		run.TotalFilesMade,
-		run.ArchiveIndex,
-		ProcessedVersionFromDate(run.Started),
+	assets, err := AssetsToJson(archive.Assets)
+	if err != nil {
+		return fmt.Errorf("failed to convert assets to JSON: %w", err)
+	}
+	_, err = dbm.db.Exec(insertSQL,
+		archive.Name,
+		archive.Datetime.Format(time.RFC3339),
+		archive.LastUpdated.Format(time.RFC3339),
+		archive.ID,
+		ProcessedVersionFromDate(archive.Datetime),
+		assets,
 	)
 
 	return err
@@ -122,7 +155,7 @@ func (dbm *MetadataDB) Close() error {
 
 // GetExistingFiles returns a list of files that are already in the database
 func (dbm *MetadataDB) GetExistingFiles() (map[string]bool, error) {
-	query := "SELECT logfile FROM runs"
+	query := "SELECT name FROM runs"
 	rows, err := dbm.db.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query existing files: %w", err)
@@ -131,11 +164,11 @@ func (dbm *MetadataDB) GetExistingFiles() (map[string]bool, error) {
 
 	existingFiles := make(map[string]bool)
 	for rows.Next() {
-		var logfile string
-		if err := rows.Scan(&logfile); err != nil {
-			return nil, fmt.Errorf("failed to scan logfile: %w", err)
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("failed to scan name: %w", err)
 		}
-		existingFiles[logfile] = true
+		existingFiles[name] = true
 	}
 
 	if err := rows.Err(); err != nil {
@@ -151,57 +184,20 @@ func (dbm *MetadataDB) ListFilesFromHTTP() ([]string, error) {
 		return nil, fmt.Errorf("HTTP configuration not set")
 	}
 
-	client := &http.Client{}
-
-	// Try to get directory listing by requesting the base URL
-	req, err := http.NewRequest("GET", dbm.config.LogsURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Add authentication if configured
-	if dbm.config.Username != "" && dbm.config.Password != "" {
-		req.SetBasicAuth(dbm.config.Username, dbm.config.Password)
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch directory listing: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to fetch directory listing: status %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	// Parse HTML content to extract JSON file names
-	// This is a simple approach that looks for run-*.json patterns
-	content := string(body)
-	var files []string
-
-	// Look for run-*.json patterns in the HTML content
-	lines := strings.Split(content, "\n")
-	for _, line := range lines {
-		if strings.Contains(line, "run-") && strings.Contains(line, ".json") {
-			// Extract filename from HTML content (simple approach)
-			startIdx := strings.Index(line, "run-")
-			if startIdx != -1 {
-				remaining := line[startIdx:]
-				endIdx := strings.Index(remaining, ".json")
-				if endIdx != -1 {
-					filename := remaining[:endIdx+5] // +5 to include ".json"
-					files = append(files, filename)
-				}
-			}
+	// If ArchiveURL points to a GitHub releases page, use the GitHub API to list releases.
+	if strings.Contains(dbm.config.ArchiveURL, "github.com") {
+		releases, err := getGithubReleases(dbm.config.ArchiveURL)
+		if err != nil {
+			return nil, err
 		}
+		names := make([]string, 0, len(releases))
+		for _, r := range releases {
+			names = append(names, r.Name)
+		}
+		return names, nil
 	}
 
-	return files, nil
+	return nil, fmt.Errorf("unsupported ArchiveURL format for listing files")
 }
 
 // ImportMissingFiles imports only the files that are not already in the database
@@ -212,13 +208,13 @@ func (dbm *MetadataDB) ImportMissingFiles() error {
 		return fmt.Errorf("failed to get existing files: %w", err)
 	}
 
-	// Get list of files from HTTP server
+	// Get list of runs from HTTP server (GitHub releases supported)
 	availableFiles, err := dbm.ListFilesFromHTTP()
 	if err != nil {
 		return fmt.Errorf("failed to list files from HTTP: %w", err)
 	}
 
-	// Find missing files
+	// Find missing releases
 	var missingFiles []string
 	for _, filename := range availableFiles {
 		if !existingFiles[filename] {
@@ -227,13 +223,12 @@ func (dbm *MetadataDB) ImportMissingFiles() error {
 	}
 
 	if len(missingFiles) == 0 {
-		log.Println("No new files to import")
+		log.Println("No new releases to import")
 		return nil
 	}
 
-	log.Printf("Found %d new files to import: %v", len(missingFiles), missingFiles)
+	log.Printf("Found %d new releases to import: %v", len(missingFiles), missingFiles)
 
-	// Import only the missing files
 	return dbm.ImportFromHTTP(missingFiles)
 }
 
@@ -248,62 +243,136 @@ func (dbm *MetadataDB) ImportFromHTTP(files []string) error {
 		return fmt.Errorf("HTTP configuration not set")
 	}
 
-	client := &http.Client{}
-
-	for _, filename := range files {
-		url := dbm.config.LogsURL + "/" + filename
-
-		req, err := http.NewRequest("GET", url, nil)
+	// If ArchiveURL is GitHub releases, fetch release metadata and create Archive objects from releases
+	if strings.Contains(dbm.config.ArchiveURL, "github.com") {
+		releases, err := getGithubReleases(dbm.config.ArchiveURL)
 		if err != nil {
-			return fmt.Errorf("failed to create request for %s: %w", filename, err)
+			return err
 		}
 
-		// Add authentication if configured
-		if dbm.config.Username != "" && dbm.config.Password != "" {
-			req.SetBasicAuth(dbm.config.Username, dbm.config.Password)
+		// Build a map of release name -> release
+		relMap := make(map[string]githubRelease)
+		for _, r := range releases {
+			relMap[r.Name] = r
 		}
 
-		resp, err := client.Do(req)
-		if err != nil {
-			return fmt.Errorf("failed to fetch %s: %w", filename, err)
-		}
-		defer resp.Body.Close()
+		for _, filename := range files {
+			r, ok := relMap[filename]
+			if !ok {
+				log.Printf("Release %s not found in GitHub releases, skipping", filename)
+				continue
+			}
 
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("failed to fetch %s: status %d", filename, resp.StatusCode)
-		}
+			// Parse started time from release name. Release names are like world-2025-11-01T11-47-58.104Z
+			started, err := parseReleaseTime(r.Name)
+			if err != nil {
+				log.Printf("failed to parse time for release %s: %v", r.Name, err)
+				continue
+			}
 
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return fmt.Errorf("failed to read response body for %s: %w", filename, err)
-		}
+			archive := Archive{
+				Name:        r.Name,
+				ID:          r.ID,
+				Datetime:    started,
+				LastUpdated: r.UpdatedAt,
+				Assets:      r.Assets,
+			}
 
-		var run Run
-		err = json.Unmarshal(body, &run)
-		if err != nil {
-			return fmt.Errorf("failed to parse JSON from %s: %w", filename, err)
+			if err := dbm.SaveRun(archive); err != nil {
+				return fmt.Errorf("failed to save run from %s: %w", r.Name, err)
+			}
+			log.Printf("Imported release %s (assets: %d)", r.Name, len(r.Assets))
 		}
-
-		// Save the run to database
-		err = dbm.SaveRun(filename, run)
-		if err != nil {
-			return fmt.Errorf("failed to save run from %s: %w", filename, err)
-		}
-
-		log.Printf("Successfully imported run from %s", filename)
+		return nil
 	}
 
-	return nil
+	return fmt.Errorf("unsupported ArchiveURL format for importing files")
 }
 
-type Archive struct {
-	datetime time.Time
-	index    int
-	version  string
+// getGithubReleases fetches releases for a GitHub repo given a releases URL like
+// https://github.com/owner/repo/releases
+func getGithubReleases(releasesURL string) ([]githubRelease, error) {
+	if releasesURL == "" {
+		return nil, fmt.Errorf("empty releases URL")
+	}
+	u, err := url.Parse(releasesURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid releases URL: %w", err)
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) < 2 {
+		return nil, fmt.Errorf("cannot determine owner/repo from %s", releasesURL)
+	}
+	owner := parts[0]
+	repo := parts[1]
+
+	api := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases", owner, repo)
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", api, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch GitHub releases: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("GitHub API returned status %d: %s", resp.StatusCode, string(body))
+	}
+	var releases []githubRelease
+	dec := json.NewDecoder(resp.Body)
+	if err := dec.Decode(&releases); err != nil {
+		return nil, fmt.Errorf("failed to parse GitHub releases response: %w", err)
+	}
+	// Keep only releases last updated more than one hour ago to avoid incomplete releases
+	oneHourAgo := time.Now().Add(-1 * time.Hour)
+	filtered := make([]githubRelease, 0, len(releases))
+	for _, r := range releases {
+		if r.UpdatedAt.Before(oneHourAgo) {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered, nil
+}
+
+// parseReleaseTime converts a release name like "world-2025-11-01T11-47-58.104Z" into a time.Time
+func parseReleaseTime(name string) (time.Time, error) {
+	// Remove optional prefix (e.g., "world-")
+	s := strings.TrimPrefix(name, "world-")
+
+	// Find 'T' and convert the two dashes between hour/minute and minute/second back to colons
+	tIdx := strings.Index(s, "T")
+	if tIdx == -1 {
+		return time.Time{}, fmt.Errorf("invalid release time format: %s", s)
+	}
+	datePart := s[:tIdx]
+	timePart := s[tIdx+1:]
+	// timePart looks like 11-47-58.104Z or similar; replace first two '-' with ':'
+	// Only replace the first two occurrences
+	replaced := timePart
+	for i := 0; i < 2; i++ {
+		idx := strings.Index(replaced, "-")
+		if idx == -1 {
+			break
+		}
+		replaced = replaced[:idx] + ":" + replaced[idx+1:]
+	}
+	full := datePart + "T" + replaced
+	// Try RFC3339 parse
+	t, err := time.Parse(time.RFC3339, full)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to parse time %s: %w", full, err)
+	}
+	return t, nil
 }
 
 func (dbm *MetadataDB) ListArchives() ([]Archive, error) {
-	query := "SELECT started, archive_index, processed_version FROM runs ORDER BY date(started) ASC"
+	query := "SELECT release_id, name, started, processed_version, assets FROM runs ORDER BY datetime(started) ASC"
 	rows, err := dbm.db.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query archives: %w", err)
@@ -312,17 +381,23 @@ func (dbm *MetadataDB) ListArchives() ([]Archive, error) {
 
 	var archives []Archive
 	for rows.Next() {
+		var releaseID int
+		var name string
 		var started string
-		var index int
 		var version string
-		if err := rows.Scan(&started, &index, &version); err != nil {
+		var assetsStr string
+		if err := rows.Scan(&releaseID, &name, &started, &version, &assetsStr); err != nil {
 			return nil, fmt.Errorf("failed to scan archive row: %w", err)
 		}
 		t, err := time.Parse(time.RFC3339, started)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse started time: %w", err)
 		}
-		archives = append(archives, Archive{datetime: t, index: index, version: version})
+		assets, err := AssetsFromJson(assetsStr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse assets JSON: %w", err)
+		}
+		archives = append(archives, Archive{ID: releaseID, Name: name, Datetime: t, ProcessedVersion: version, Assets: assets})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating archive rows: %w", err)
@@ -331,13 +406,10 @@ func (dbm *MetadataDB) ListArchives() ([]Archive, error) {
 }
 
 type Job struct {
-	isDiff              bool
-	base                string
-	archive             Archive
-	archiveFile         string
-	archiveFileExists   bool
-	processedFile       string
-	processedFileExists bool
+	isDiff        bool
+	base          string
+	archive       Archive
+	processedFile string
 }
 
 func (dbm *MetadataDB) Plan() ([]Job, error) {
@@ -352,14 +424,14 @@ func (dbm *MetadataDB) Plan() ([]Job, error) {
 	currentBase := ""
 	for _, archive := range archives {
 		// Keep one archive per day
-		if currentDay == archive.datetime.Day() {
+		if currentDay == archive.Datetime.Day() {
 			continue
 		}
-		currentDay = archive.datetime.Day()
+		currentDay = archive.Datetime.Day()
 		// Every 7 days, one get promoted to "base"
-		s := strings.Split(strings.TrimPrefix(archive.version, "v"), ".")
+		s := strings.Split(strings.TrimPrefix(archive.ProcessedVersion, "v"), ".")
 		if len(s) != 2 {
-			return nil, fmt.Errorf("bad version format %s", archive.version)
+			return nil, fmt.Errorf("bad version format %s", archive.ProcessedVersion)
 		}
 		week := s[0]
 		isDiff := true
@@ -368,14 +440,14 @@ func (dbm *MetadataDB) Plan() ([]Job, error) {
 			currentWeek = week
 			isDiff = false
 			// change version for base to "vX" only
-			s := strings.Split(archive.version, ".")
-			archive.version = s[0]
+			s := strings.Split(archive.ProcessedVersion, ".")
+			archive.ProcessedVersion = s[0]
 		}
 		job := Job{
 			isDiff:  isDiff,
 			archive: archive,
 		}
-		CheckJobDone(&job, dbm.archiveFolder, dbm.processedFolder)
+		job.processedFile = fmt.Sprintf("%s_%s.db", archive.ProcessedVersion, archive.Datetime.Format("2006-01-02T15"))
 		if isDiff {
 			job.base = currentBase
 		} else {
@@ -383,27 +455,45 @@ func (dbm *MetadataDB) Plan() ([]Job, error) {
 		}
 		jobs = append(jobs, job)
 	}
-	return jobs, nil
+
+	filteredJobs, err := dbm.FilterJobs(jobs)
+	if err != nil {
+		return nil, err
+	}
+
+	return filteredJobs, nil
 }
 
-func CheckJobDone(job *Job, archiveFolder, processedFolder string) {
-	archiveFile := fmt.Sprintf("tiles-%d.7z", job.archive.index)
-	job.archiveFile = archiveFile
-	job.archiveFileExists = false
-	if archiveFolder != "" {
-		if _, err := os.Stat(filepath.Join(archiveFolder, archiveFile)); err == nil {
-			job.archiveFileExists = true
+// FilterJobs only keeps jobs where no processed file exists for the day
+func (dbm *MetadataDB) FilterJobs(jobs []Job) ([]Job, error) {
+	done := make(map[string]bool)
+	entries, err := os.ReadDir(dbm.processedFolder)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read processed folder: %w", err)
+	} else {
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if strings.HasSuffix(name, ".db") && len(name) >= len("2006-01-02T15.db") {
+				base := strings.TrimSuffix(name, ".db")
+				datePart := base[len(base)-13:] // extract trailing datetime
+				if t, err := time.Parse("2006-01-02T15", datePart); err == nil {
+					done[t.Format("2006-01-02T15")] = true
+				}
+			}
 		}
 	}
 
-	processedFile := fmt.Sprintf("%s_%s.db", job.archive.version, job.archive.datetime.Format("2006-01-02T15"))
-	job.processedFile = processedFile
-	job.processedFileExists = false
-	if processedFolder != "" {
-		if _, err := os.Stat(filepath.Join(processedFolder, processedFile)); err == nil {
-			job.processedFileExists = true
+	res := make([]Job, 0)
+	for _, job := range jobs {
+		day := job.archive.Datetime.Format("2006-01-02T15")
+		if !done[day] {
+			res = append(res, job)
 		}
 	}
+	return res, nil
 }
 
 // ProcessedVersionFromDate returns version in the format vX.Y where:
@@ -420,10 +510,7 @@ func ProcessedVersionFromDate(datetime time.Time) string {
 func main() {
 	// Jazza's creds are available on their repo
 	httpConfig := &HTTPConfig{
-		ArchiveURL: os.Getenv("JAZZA_URL"),
-		LogsURL:    os.Getenv("JAZZA_LOGS_URL"),
-		Username:   os.Getenv("JAZZA_USER"),
-		Password:   os.Getenv("JAZZA_PASSW"),
+		ArchiveURL: os.Getenv("ARCHIVES_URL"),
 	}
 
 	dbm, err := NewMetadataDBWithConfig("metadata.db", httpConfig)
@@ -453,25 +540,29 @@ func main() {
 	planCommands += fmt.Sprintf("mkdir -p %s\n", archivesFolder)
 	planCommands += "\n"
 	for _, p := range plan {
-		if p.processedFileExists {
-			continue
-		}
-
 		base := ""
 		if p.isDiff {
 			base = fmt.Sprintf("--base %s", path.Join(doneFolder, p.base))
 		}
-		archive := path.Join(archivesFolder, p.archiveFile)
-		from := path.Join("/dev/shm/wplace-tmpdata", strings.TrimSuffix(p.archiveFile, ".7z"))
+		tmp := "/dev/shm/wplace-tmpdata"
 		out := path.Join(tmpProcessedFolder, p.processedFile)
 
-		if !p.archiveFileExists {
-			planCommands += fmt.Sprintf("curl -u '%s:%s' -o %s %s/%s\n", httpConfig.Username, httpConfig.Password, archive, httpConfig.ArchiveURL, p.archiveFile)
+		planCommands += fmt.Sprintf("echo 'Processing archive %s'\n", p.archive.Name)
+		// Download archive assets
+		assetsFolder := fmt.Sprintf("%s/%d", archivesFolder, p.archive.ID)
+		planCommands += fmt.Sprintf("mkdir -p %s\n", assetsFolder)
+		downloadAssetCommands := []string{}
+		for _, asset := range p.archive.Assets {
+			downloadAssetCommands = append(downloadAssetCommands, fmt.Sprintf("curl -L -o '%s/%s' '%s'", assetsFolder, asset.Name, asset.BrowserDownloadURL))
 		}
-		planCommands += fmt.Sprintf("rm -rf /dev/shm/wplace-tmpdata/ && mkdir /dev/shm/wplace-tmpdata && 7z x %s -o/dev/shm/wplace-tmpdata/\n", archive)
-		planCommands += fmt.Sprintf("./ingest %s --from %s --out %s\n", base, from, out)
-		planCommands += "rm -rf /dev/shm/wplace-tmpdata/\n"
-		planCommands += fmt.Sprintf("rm %s\n", archive)
+		planCommands += strings.Join(downloadAssetCommands, " && ") + "\n"
+		archive := path.Join(assetsFolder, "full.tar.gz")
+		planCommands += fmt.Sprintf("cat %s/*.tar.gz.* > %s\n", assetsFolder, archive)
+
+		planCommands += fmt.Sprintf("rm -rf %s && mkdir %s && tar -xzf %s -C %s --strip-components=1\n", tmp, tmp, archive, tmp)
+		planCommands += fmt.Sprintf("./ingest %s --from %s --out %s\n", base, tmp, out)
+		planCommands += fmt.Sprintf("rm -rf %s\n", tmp)
+		planCommands += fmt.Sprintf("rm -rf %s\n", assetsFolder)
 		planCommands += fmt.Sprintf("./merge %s --target %s\n", base, out)
 		planCommands += fmt.Sprintf("sqlite3 %s 'PRAGMA journal_mode = DELETE;'\n", out)
 		planCommands += fmt.Sprintf("mv %s %s\n", out, path.Join(doneFolder, p.processedFile))
