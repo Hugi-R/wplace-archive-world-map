@@ -17,7 +17,7 @@ This is what's behind [wplace.eralyon.net](https://wplace.eralyon.net/).
 ### Prerequisites
 - Go 1.24+
 - Docker (optional, for containerizing the tile server)
-- Wplace archive can be found at [Jazza-231/wplace-scripts](https://github.com/Jazza-231/wplace-scripts) or [murolem/wplace-archives](https://github.com/murolem/wplace-archives)
+- Wplace archive can be found at [murolem/wplace-archives](https://github.com/murolem/wplace-archives) (and previously at [Jazza-231/wplace-scripts](https://github.com/Jazza-231/wplace-scripts))
 
 ### Build & Run
 
@@ -91,17 +91,15 @@ DATA_PATH=./data ./bin/tileserver
 The server is available at `http://localhost:8080`.
 
 ### MetadataDB
-List available archives from [Jazza-231/wplace-scripts](https://github.com/Jazza-231/wplace-scripts), and build a `plan.sh` to import them.
+List available archives from [murolem/wplace-archives](https://github.com/murolem/wplace-archives), and build a `plan.sh` to import them.
 Only the missing archives are imported.
 
 This will produce the exact same files as used by [wplace.eralyon.net](https://wplace.eralyon.net/):
 ```shell
 export META_WORK_FOLDER="./wplace-work"
-export META_DONE_FOLDER="./website/live"
-export JAZZA_URL="<URL>"
-export JAZZA_LOGS_URL="${JAZZA_URL}$/logs"
-export JAZZA_USER="<USER>"
-export JAZZA_PASSW="<PASSWORD>"
+export META_DONE_FOLDER="/wplace-done"
+export ARCHIVES_URL='https://github.com/murolem/wplace-archives/releases'
+
 
 ./bin/meta
 
