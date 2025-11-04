@@ -306,38 +306,92 @@ func getGithubReleases(releasesURL string) ([]githubRelease, error) {
 	owner := parts[0]
 	repo := parts[1]
 
-	api := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases", owner, repo)
-	client := &http.Client{}
-	req, err := http.NewRequest("GET", api, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	apiBase := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases", owner, repo)
+	client := &http.Client{Timeout: 15 * time.Second}
+
+	// optional token to avoid strict unauthenticated rate limits
+	token := os.Getenv("GITHUB_TOKEN")
+
+	allReleases := make([]githubRelease, 0)
+	perPage := 100
+	page := 1
+
+	for {
+		api := fmt.Sprintf("%s?per_page=%d&page=%d", apiBase, perPage, page)
+		req, err := http.NewRequest("GET", api, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		req.Header.Set("Accept", "application/vnd.github.v3+json")
+		if token != "" {
+			req.Header.Set("Authorization", "token "+token)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch GitHub releases: %w", err)
+		}
+
+		// read Link header before closing body
+		linkHeader := resp.Header.Get("Link")
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("GitHub API returned status %d: %s", resp.StatusCode, string(body))
+		}
+
+		var releases []githubRelease
+		dec := json.NewDecoder(resp.Body)
+		if err := dec.Decode(&releases); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("failed to parse GitHub releases response: %w", err)
+		}
+		resp.Body.Close()
+
+		if len(releases) == 0 {
+			break
+		}
+
+		allReleases = append(allReleases, releases...)
+
+		// If Link header present, use it to determine if there is a next page.
+		// Otherwise, stop when fewer than perPage items returned.
+		if linkHeader == "" {
+			if len(releases) < perPage {
+				break
+			}
+			page++
+			continue
+		}
+		if !hasNextLink(linkHeader) {
+			break
+		}
+		page++
 	}
 
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch GitHub releases: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("GitHub API returned status %d: %s", resp.StatusCode, string(body))
-	}
-	var releases []githubRelease
-	dec := json.NewDecoder(resp.Body)
-	if err := dec.Decode(&releases); err != nil {
-		return nil, fmt.Errorf("failed to parse GitHub releases response: %w", err)
-	}
 	// Keep only releases last updated more than one hour ago to avoid incomplete releases
 	oneHourAgo := time.Now().Add(-1 * time.Hour)
-	filtered := make([]githubRelease, 0, len(releases))
-	for _, r := range releases {
+	filtered := make([]githubRelease, 0, len(allReleases))
+	for _, r := range allReleases {
 		if r.UpdatedAt.Before(oneHourAgo) {
 			filtered = append(filtered, r)
 		}
 	}
 	return filtered, nil
+}
+
+// hasNextLink returns true if the Link header contains a rel="next" link.
+func hasNextLink(link string) bool {
+	// Example Link header:
+	// <https://api.github.com/...&page=2>; rel="next", <https://api.github.com/...&page=5>; rel="last"
+	parts := strings.Split(link, ",")
+	for _, p := range parts {
+		if strings.Contains(p, `rel="next"`) {
+			return true
+		}
+	}
+	return false
 }
 
 // parseReleaseTime converts a release name like "world-2025-11-01T11-47-58.104Z" into a time.Time
@@ -480,7 +534,7 @@ func (dbm *MetadataDB) FilterJobs(jobs []Job) ([]Job, error) {
 				base := strings.TrimSuffix(name, ".db")
 				datePart := base[len(base)-13:] // extract trailing datetime
 				if t, err := time.Parse("2006-01-02T15", datePart); err == nil {
-					done[t.Format("2006-01-02T15")] = true
+					done[t.Format("2006-01-02")] = true
 				}
 			}
 		}
@@ -488,7 +542,7 @@ func (dbm *MetadataDB) FilterJobs(jobs []Job) ([]Job, error) {
 
 	res := make([]Job, 0)
 	for _, job := range jobs {
-		day := job.archive.Datetime.Format("2006-01-02T15")
+		day := job.archive.Datetime.Format("2006-01-02")
 		if !done[day] {
 			res = append(res, job)
 		}
