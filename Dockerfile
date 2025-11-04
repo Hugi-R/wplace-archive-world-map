@@ -8,9 +8,9 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY ./img img
-COPY ./tileserver tileserver
-RUN go build -o tileserver ./tileserver/server.go
-RUN GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CXX=x86_64-w64-mingw32-g++ CC=x86_64-w64-mingw32-gcc go build -o tileserver.exe tileserver/server.go
+COPY ./tileserver tileserverSrc
+RUN go build -o tileserver ./tileserverSrc/server.go
+RUN GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CXX=x86_64-w64-mingw32-g++ CC=x86_64-w64-mingw32-gcc go build -o tileserver.exe tileserverSrc/server.go
 COPY ./store store
 RUN go build -o ingest store/main/main.go
 RUN GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CXX=x86_64-w64-mingw32-g++ CC=x86_64-w64-mingw32-gcc go build -o ingest.exe store/main/main.go
