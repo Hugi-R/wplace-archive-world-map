@@ -2,11 +2,16 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"log"
 	"net/http"
 	"os"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,6 +27,8 @@ type TileServer struct {
 	stmts               map[string]*sql.Stmt
 	versionDescriptions map[string]string
 	indexHtml           string
+	latestVersion       string
+	previewImage        []byte
 }
 
 func NewTileServer(dataPath string) (*TileServer, error) {
@@ -38,6 +45,11 @@ func NewTileServer(dataPath string) (*TileServer, error) {
 	}
 	if err := ts.initializeIndex(); err != nil {
 		return nil, err
+	}
+	var err error
+	ts.previewImage, err = ts.MakeLatestImage()
+	if err != nil {
+		fmt.Printf("Warning: failed to create preview image: %v\n", err)
 	}
 	return ts, nil
 }
@@ -131,6 +143,7 @@ func (ts *TileServer) initializeIndex() error {
 		}
 		return vi < vj
 	})
+	ts.latestVersion = versions[len(versions)-1]
 
 	// load index.html.tmpl and replace $$VERSION_OPTIONS$$ with options
 	data, err := os.ReadFile(ts.dataPath + "/index.html.tmpl")
@@ -259,6 +272,55 @@ func (ts *TileServer) Close() error {
 	return lastErr
 }
 
+func (ts *TileServer) MakeLatestImage() ([]byte, error) {
+	// Get latest tile (z=0, x=0, y=0)
+	latestBaseVersion := strings.Split(ts.latestVersion, ".")[0]
+	latestTile, err := ts.GetTile(0, 0, 0, latestBaseVersion)
+	if err != nil {
+		return nil, err
+	}
+	latestImg, err := png.Decode(bytes.NewReader(latestTile))
+	if err != nil {
+		return nil, err
+	}
+
+	// Open basemap image
+	f, err := os.Open(path.Join(ts.dataPath, "osm000.png"))
+	if err != nil {
+		return latestTile, err
+	}
+	defer f.Close()
+	basemap, err := png.Decode(f)
+	if err != nil {
+		return latestTile, err
+	}
+
+	// Overlay latest tile on basemap
+	if basemap.Bounds() != latestImg.Bounds() {
+		return latestTile, fmt.Errorf("basemap size does not match latest tile size")
+	}
+	outImg := image.NewRGBA(basemap.Bounds())
+	for y := 0; y < basemap.Bounds().Dy(); y++ {
+		for x := 0; x < basemap.Bounds().Dx(); x++ {
+			r, g, b, a := basemap.At(x, y).RGBA()
+			tr, tg, tb, ta := latestImg.At(x, y).RGBA()
+			if ta > 0 {
+				outImg.Set(x, y, color.RGBA{uint8(tr >> 8), uint8(tg >> 8), uint8(tb >> 8), uint8(ta >> 8)})
+			} else {
+				outImg.Set(x, y, color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), uint8(a >> 8)})
+			}
+		}
+	}
+
+	// Encode output image to PNG
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, outImg); err != nil {
+		return latestTile, err
+	}
+
+	return buf.Bytes(), nil
+}
+
 func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -284,9 +346,13 @@ func main() {
 	// Root endpoint for index.html
 	r.HandleFunc("/", tileServer.serveIndex).Methods("GET")
 
-	// Optional: serve other static files from a static directory
-	r.PathPrefix("/static/").Handler(http.StripPrefix("/static/",
-		http.FileServer(http.Dir("./static/"))))
+	// Preview image endpoint
+	r.HandleFunc("/preview.png", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Content-Length", strconv.Itoa(len(tileServer.previewImage)))
+		w.WriteHeader(http.StatusOK)
+		w.Write(tileServer.previewImage)
+	}).Methods("GET")
 
 	// Add middleware for logging
 	r.Use(loggingMiddleware)

@@ -2,9 +2,19 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="description" content="Explore the Wplace World Map at any zoom level. View, download, and explore previous versions of Wplace.">
-  <meta name="keywords" content="wplace, world map, zoom, back in time, download, overlay">
-  <title>Wplace World Map</title>
+  <meta name="description" content="Daily archives of Wplace. Explore Wplace map starting from August 2025, and at any zoom level.">
+  <meta name="keywords" content="wplace, archives, world map, zoom, back in time, download, overlay">
+  <link rel="canonical" href="https://wplace.eralyon.net/">
+  <meta property="og:title" content="Wplace Daily Archives">
+  <meta property="og:description" content="Daily archives of Wplace. Explore Wplace map starting from august 2025, and at any zoom level.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://wplace.eralyon.net/">
+  <meta property="og:image" content="/preview.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Wplace Daily Archives">
+  <meta name="twitter:description" content="Daily archives of Wplace. Explore Wplace map starting from august 2025, and at any zoom level.">
+  <meta name="twitter:image" content="/preview.png">
+  <title>Wplace Daily Archives</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link href="https://unpkg.com/maplibre-gl@5.7.1/dist/maplibre-gl.css" rel="stylesheet" />
   <style>
@@ -105,9 +115,10 @@
   <div id="encart">
     <span id="encart-close">&times;</span>
     <div id="encart-content">
-      <span>Data kindly provided by <a href="https://www.reddit.com/user/OkInfluence36/">u/OkInfluence36</a>.</span>
-      <span>Each zoom level halve the image resolution. The pixel is choosen by majority.</span>
-      <span>Rick-click for more tools.</span>
+      <p>Explore Wplace world map archives at any zoom level, starting from August 2025.</p>
+      <p>Data kindly provided by <a href="https://www.reddit.com/user/OkInfluence36/" target="_blank" rel="noopener noreferrer">u/OkInfluence36</a> and <a href="https://github.com/murolem/wplace-archives" target="_blank" rel="noopener noreferrer">murolem</a>.</p>
+      <p>Each zoom level halves the image resolution. The pixel is chosen by majority. Right-click for more tools.</p>
+      <p>Report bugs on <a href="https://github.com/Hugi-R/wplace-archive-world-map" target="_blank" rel="noopener noreferrer">GitHub</a> or to <a href="https://www.reddit.com/user/EralyonDotnet/" target="_blank" rel="noopener noreferrer">u/EralyonDotnet</a>.</p>
     </div>
   </div>
   <div id="coord-input">
@@ -558,12 +569,9 @@
       map.on('move', drawTileOverlay);
       map.on('zoom', drawTileOverlay);
       map.on('resize', drawTileOverlay);
-      document.getElementById('wplace-version').addEventListener('change', drawTileOverlay);
       overlayToggle.addEventListener('change', drawTileOverlay);
       // Initial draw
       drawTileOverlay();
-      // Redraw overlay after style change
-      map.once('styledata', drawTileOverlay);
     });
   </script>
 </body>
