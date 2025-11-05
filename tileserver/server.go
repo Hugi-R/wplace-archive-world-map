@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -29,6 +30,7 @@ type TileServer struct {
 	indexHtml           string
 	latestVersion       string
 	previewImage        []byte
+	faviconData         []byte
 }
 
 func NewTileServer(dataPath string) (*TileServer, error) {
@@ -50,6 +52,10 @@ func NewTileServer(dataPath string) (*TileServer, error) {
 	ts.previewImage, err = ts.MakeLatestImage()
 	if err != nil {
 		fmt.Printf("Warning: failed to create preview image: %v\n", err)
+	}
+	ts.faviconData, err = ts.MakeFavicon()
+	if err != nil {
+		fmt.Printf("Warning: failed to load favicon: %v\n", err)
 	}
 	return ts, nil
 }
@@ -321,6 +327,19 @@ func (ts *TileServer) MakeLatestImage() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+func (ts *TileServer) MakeFavicon() ([]byte, error) {
+	f, err := os.Open(path.Join(ts.dataPath, "favicon.ico"))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	faviconData, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
+	return faviconData, nil
+}
+
 func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -352,6 +371,14 @@ func main() {
 		w.Header().Set("Content-Length", strconv.Itoa(len(tileServer.previewImage)))
 		w.WriteHeader(http.StatusOK)
 		w.Write(tileServer.previewImage)
+	}).Methods("GET")
+
+	// Favicon endpoint
+	r.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/x-icon")
+		w.Header().Set("Content-Length", strconv.Itoa(len(tileServer.faviconData)))
+		w.WriteHeader(http.StatusOK)
+		w.Write(tileServer.faviconData)
 	}).Methods("GET")
 
 	// Add middleware for logging
