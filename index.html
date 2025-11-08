@@ -50,7 +50,7 @@
       gap: 16px;
       border-bottom: 1px solid #e0e0e0;
     }
-    #zoom-level {
+    #overlay-toggle {
       position: absolute;
       top: 110px;
       left: 10px;
@@ -61,20 +61,9 @@
       font-family: sans-serif;
       font-size: 16px;
     }
-    #overlay-toggle {
-      position: absolute;
-      top: 150px;
-      left: 10px;
-      z-index: 1;
-      background: rgba(255,255,255,0.8);
-      padding: 6px 12px;
-      border-radius: 4px;
-      font-family: sans-serif;
-      font-size: 16px;
-    }
     #encart {
       position: absolute;
-      top: 200px;
+      top: 150px;
       left: 10px;
       z-index: 20;
       background: rgba(255,255,255,0.8);
@@ -124,6 +113,8 @@
   </div>
   <div id="coord-input">
     <form id="goto-coord-form" style="display:flex;gap:6px;align-items:center;">
+      <label for="coord-zoom" style="font-size:15px;">Zoom:</label>
+      <input id="coord-zoom" type="number" step="any" style="width:80px;font-size:15px;" placeholder="Zoom" required>
       <label for="coord-lat" style="font-size:15px;">Lat:</label>
       <input id="coord-lat" type="number" step="any" style="width:80px;font-size:15px;" placeholder="Lat" required>
       <label for="coord-lng" style="font-size:15px;">Lng:</label>
@@ -137,7 +128,6 @@
     <span id="wplace-version-label" style="width: 14ch;"></span>
   </div>
   <datalist id="wplace-version-ticks"></datalist>
-  <div id="zoom-level">Zoom: </div>
   <div id="overlay-toggle">
     <label><input type="checkbox" id="toggle-tile-overlay"> Show tile overlay</label>
   </div>
@@ -156,7 +146,7 @@
     });
 
     // --- Version slider setup ---
-    // Injected from server: versions array [{version: 'v1', date: '2025-09-20'}, ...]
+    // Injected from server: versions array [{version: 'v1', date: '2025-09-20'}, {version: 'v1.024', date: '2025-09-21'}, ...]
     const WPLACE_VERSIONS = [
       //$$VERSION_OPTIONS$$
     ];
@@ -176,6 +166,13 @@
     function updateVersionLabel(idx) {
       const v = WPLACE_VERSIONS[idx];
       versionLabel.textContent = v ? `${v.date}` : '';
+    }
+    // If a version is present in the URL, try to use it
+    const _urlParams = new URLSearchParams(window.location.search);
+    const _urlVersion = _urlParams.get('version');
+    if (_urlVersion) {
+      const _idx = WPLACE_VERSIONS.findIndex(v => v.version === _urlVersion);
+      if (_idx >= 0) versionSlider.value = _idx;
     }
     updateVersionLabel(versionSlider.value);
     let wplaceVersion = WPLACE_VERSIONS[versionSlider.value].version;
@@ -239,14 +236,16 @@
     maplibregl.addProtocol('merged', async (params, abortControler) => {
       const { vBase, vDiff, z, x, y } = parseTileUrl(params.url);
       
-      // Check cache for merged tile
-      const cache = await caches.open("merged-tiles");
-      const cacheKey = `tile-${vDiff ? vDiff : vBase}-${z}-${x}-${y}`;
-      // Try to get from cache first
-      const cachedResponse = await cache.match(cacheKey);
-      if (cachedResponse) {
-        const buffer = await cachedResponse.arrayBuffer();
-        return {data: buffer};
+      if (typeof caches !== 'undefined') {
+        // Check cache for merged tile
+        const cache = await caches.open("merged-tiles");
+        const cacheKey = `tile-${vDiff ? vDiff : vBase}-${z}-${x}-${y}`;
+        // Try to get from cache first
+        const cachedResponse = await cache.match(cacheKey);
+        if (cachedResponse) {
+          const buffer = await cachedResponse.arrayBuffer();
+          return {data: buffer};
+        }
       }
 
       // No diff version, fetch only the base
@@ -257,14 +256,16 @@
         if (tile.status == 200) {
           const buffer = await tile.arrayBuffer();
 
-          // Store in cache
-          const responseForCache = new Response(buffer, {
-            headers: {
-              'Content-Type': 'image/png',
-              'Cache-Control': 'max-age=604800' // Cache for 7 days
-            }
-          });
-          await cache.put(cacheKey, responseForCache);
+          if (typeof caches !== 'undefined') {
+            // Store in cache
+            const responseForCache = new Response(buffer, {
+              headers: {
+                'Content-Type': 'image/png',
+                'Cache-Control': 'max-age=604800' // Cache for 7 days
+              }
+            });
+            await cache.put(cacheKey, responseForCache);
+          }
 
           return {data: buffer};
         }
@@ -295,17 +296,54 @@
       const merged = await mergeTileBlobs(blob1, blob2);
       const buffer = await merged.arrayBuffer();
 
-      // Store in cache
-      const responseForCache = new Response(buffer, {
-        headers: {
-          'Content-Type': 'image/png',
-          'Cache-Control': 'max-age=604800' // Cache for 7 days
-        }
-      });
-      await cache.put(cacheKey, responseForCache);
+      if (typeof caches !== 'undefined') {
+        // Store in cache
+        const responseForCache = new Response(buffer, {
+          headers: {
+            'Content-Type': 'image/png',
+            'Cache-Control': 'max-age=604800' // Cache for 7 days
+          }
+        });
+        await cache.put(cacheKey, responseForCache);
+      }
 
       return {data: buffer};
     });
+
+      // --- URL param helpers: read and update lat/lng/zoom ---
+      function getInitialViewFromUrl() {
+        const params = new URLSearchParams(window.location.search);
+        const lat = parseFloat(params.get('lat'));
+        const lng = parseFloat(params.get('lng'));
+        const zoom = parseFloat(params.get('zoom'));
+        const hasLatLng = !isNaN(lat) && !isNaN(lng);
+        const hasZoom = !isNaN(zoom);
+        const result = {
+          center: [0, 0],
+          zoom: 2
+        };
+        if (hasLatLng) {
+          result.center = [lng, lat];
+        }
+        if (hasZoom) {
+          result.zoom = zoom;
+        }
+        return result
+      }
+
+      function updateUrlWithMapView(mapInstance) {
+        const center = mapInstance.getCenter();
+        const zoom = mapInstance.getZoom();
+        const params = new URLSearchParams(window.location.search);
+        params.set('lat', center.lat.toFixed(6));
+        params.set('lng', center.lng.toFixed(6));
+        params.set('zoom', zoom.toFixed(2));
+        if (typeof wplaceVersion !== 'undefined' && wplaceVersion) {
+          params.set('version', wplaceVersion);
+        }
+        const newUrl = window.location.pathname + '?' + params.toString();
+        history.replaceState(null, '', newUrl);
+      }
 
     function parseTileUrl(url) {
       // Example: merged://tiles/version/z/x/y.png
@@ -361,20 +399,41 @@
     }
 
     // Create map
+    const _initialView = getInitialViewFromUrl();
     const map = new maplibregl.Map({
       container: 'map',
       style: getMapStyle(wplaceVersion),
-      center: [0, 0],
-      zoom: 2
+      center: _initialView.center,
+      zoom: _initialView.zoom
     });
 
     // Display and update zoom level
     const zoomDiv = document.getElementById('zoom-level');
     function updateZoom() {
-      zoomDiv.textContent = 'Zoom: ' + map.getZoom().toFixed(2);
+      const zoomInput = document.getElementById('coord-zoom')
+      if (zoomInput) {
+        zoomInput.value = map.getZoom().toFixed(2);
+      }
     }
     map.on('zoom', updateZoom);
     map.on('load', updateZoom);
+
+    // Update URL when the map stops moving and keep inputs in sync
+    map.on('moveend', function() {
+      try {
+        updateUrlWithMapView(map);
+      } catch (e) {
+        console.error(e);
+      }
+      // keep coordinate inputs up-to-date
+      const latInput = document.getElementById('coord-lat');
+      const lngInput = document.getElementById('coord-lng');
+      if (latInput && lngInput) {
+        const c = map.getCenter();
+        latInput.value = c.lat.toFixed(6);
+        lngInput.value = c.lng.toFixed(6);
+      }
+    });
 
     // Handle version slider change
     versionSlider.addEventListener('input', function(e) {
@@ -382,7 +441,8 @@
       wplaceVersion = WPLACE_VERSIONS[idx].version;
       updateVersionLabel(idx);
       map.setStyle(getMapStyle(wplaceVersion));
-      map.once('styledata', updateZoom);
+      // after the style is applied, update zoom display and the url (so version is saved)
+      map.once('styledata', function() { updateZoom(); try { updateUrlWithMapView(map); } catch (e) { console.error(e)} });
     });
 
     // --- Custom Right-Click Menu ---
@@ -445,6 +505,11 @@
       if (!lastTileCoords) return;
       const { z, x, y } = lastTileCoords;
       
+      if (typeof caches === 'undefined') {
+        alert('Caching is not supported in this browser. Downloading tiles not available.');
+        return;
+      }
+
       // Get tile from cache
       const cache = await caches.open("merged-tiles");
       const cacheKey = `tile-${wplaceVersion}-${z}-${x}-${y}`;
@@ -476,10 +541,11 @@
     // --- Coordinate Input Handler ---
     document.getElementById('goto-coord-form').addEventListener('submit', function(e) {
       e.preventDefault();
+      const zoom = parseFloat(document.getElementById('coord-zoom').value);
       const lat = parseFloat(document.getElementById('coord-lat').value);
       const lng = parseFloat(document.getElementById('coord-lng').value);
-      if (isNaN(lat) || isNaN(lng)) return;
-      map.flyTo({ center: [lng, lat], zoom: 10 });
+      if (isNaN(zoom) || isNaN(lat) || isNaN(lng)) return;
+      map.flyTo({ center: [lng, lat], zoom: zoom });
     });
 
     // --- Canvas Overlay Setup ---
@@ -504,6 +570,18 @@
       window.addEventListener('resize', resizeCanvas);
       map.on('resize', resizeCanvas);
       resizeCanvas();
+
+      // Prefill coordinate inputs from the current map center (initial load)
+      const latInputInit = document.getElementById('coord-lat');
+      const lngInputInit = document.getElementById('coord-lng');
+      if (latInputInit && lngInputInit) {
+        const c0 = map.getCenter();
+        latInputInit.value = c0.lat.toFixed(6);
+        lngInputInit.value = c0.lng.toFixed(6);
+      }
+
+      // Normalize/update URL once on initial load
+      try { updateUrlWithMapView(map); } catch (e) { console.error(e); }
 
       // --- Overlay Toggle ---
       overlayToggle = document.getElementById('toggle-tile-overlay');
