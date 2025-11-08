@@ -238,10 +238,10 @@
     maplibregl.addProtocol('merged', async (params, abortControler) => {
       const { vBase, vDiff, z, x, y } = parseTileUrl(params.url);
       
-      if (typeof caches !== 'undefined') {
-        // Check cache for merged tile
-        const cache = await caches.open("merged-tiles");
-        const cacheKey = `tile-${vDiff ? vDiff : vBase}-${z}-${x}-${y}`;
+      const cache = typeof caches !== 'undefined' ? await caches.open("merged-tiles") : null;
+      const cacheKey = `tile-${vDiff ? vDiff : vBase}-${z}-${x}-${y}`;
+
+      if (cache) {
         // Try to get from cache first
         const cachedResponse = await cache.match(cacheKey);
         if (cachedResponse) {
@@ -258,7 +258,7 @@
         if (tile.status == 200) {
           const buffer = await tile.arrayBuffer();
 
-          if (typeof caches !== 'undefined') {
+          if (cache) {
             // Store in cache
             const responseForCache = new Response(buffer, {
               headers: {
@@ -298,7 +298,7 @@
       const merged = await mergeTileBlobs(blob1, blob2);
       const buffer = await merged.arrayBuffer();
 
-      if (typeof caches !== 'undefined') {
+      if (cache) {
         // Store in cache
         const responseForCache = new Response(buffer, {
           headers: {
