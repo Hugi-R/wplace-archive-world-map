@@ -633,14 +633,20 @@
             const p2 = map.project([east, south]);
             // Draw rectangle
             ctx.strokeStyle = 'rgba(0,0,255,0.5)';
-            ctx.lineWidth = 1;
+            ctx.lineWidth = 3;
             ctx.strokeRect(p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
             // Draw ID
-            ctx.fillStyle = 'rgba(0,0,255,0.7)';
-            ctx.font = '12px sans-serif';
+            ctx.font = 'bold 15px sans-serif';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             const id = `${x},${y},${zoom}`;
+            // Outline
+            ctx.lineWidth = 3;
+            ctx.lineJoin = 'round';
+            ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+            ctx.strokeText(id, (p1.x + p2.x) / 2, (p1.y + p2.y) / 2);
+            // Fill
+            ctx.fillStyle = 'rgba(0,0,255,1)';
             ctx.fillText(id, (p1.x + p2.x) / 2, (p1.y + p2.y) / 2);
           }
         }
