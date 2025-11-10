@@ -21,16 +21,30 @@
   <style>
     body, html { height: 100%; margin: 0; }
     #map { position: absolute; top: 0; bottom: 0; width: 100%; }
-    #coord-input {
+    #extra {
       position: absolute;
       top: 60px;
       left: 10px;
       z-index: 3;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      align-items: flex-start;
+      pointer-events: auto;
+    }
+    #coord-input {
       background: rgba(255,255,255,0.8);
       padding: 6px 12px;
       border-radius: 4px;
       font-family: sans-serif;
       font-size: 16px;
+      /* Ensure it doesn't expand too much on narrow screens */
+      max-width: calc(100vw - 40px);
+    }
+    @media (max-width: 600px) {
+      #coord-input {
+        display: none !important;
+      }
     }
     #version-select {
       position: fixed;
@@ -51,30 +65,28 @@
       border-bottom: 1px solid #e0e0e0;
     }
     #overlay-toggle {
-      position: absolute;
-      top: 110px;
-      left: 10px;
-      z-index: 1;
       background: rgba(255,255,255,0.8);
       padding: 6px 12px;
       border-radius: 4px;
       font-family: sans-serif;
       font-size: 16px;
+      z-index: 3;
+      align-self: flex-start;
     }
     #encart {
-      position: absolute;
-      top: 150px;
-      left: 10px;
+      position: relative; /* allow #encart-close (absolute) to position relative to this box */
       z-index: 20;
-      background: rgba(255,255,255,0.8);
+      background: rgba(255,255,255,0.95);
       border-radius: 4px;
       box-shadow: 0 2px 8px rgba(0,0,0,0.10);
-      padding: 10px 16px 10px 16px;
+      /* make room on the right for the close button */
+      padding: 10px 24px 10px 16px;
       font-family: sans-serif;
       font-size: 16px;
       min-width: 220px;
       max-width: 320px;
       border: 1px solid #e0e0e0;
+      align-self: flex-start;
     }
     #encart-close {
       position: absolute;
@@ -96,42 +108,49 @@
       flex: 1;
       margin: 0;
     }
+    @media (max-width: 500px) {
+      #version-label {
+        display: none !important;
+      }
+    }
   </style>
 </head>
 <body>
   <main>
     <div id="map"></div>
   </main>
-  <div id="encart">
-    <span id="encart-close">&times;</span>
-    <div id="encart-content">
-      <p>Explore Wplace world map archives at any zoom level, starting from August 2025.</p>
-      <p>Right-click the map for more tools</p>
-      <p>Each zoom level halves the image resolution. The pixel is chosen by majority. Deleted pixels can linger up to a week.</p>
-      <p>Data kindly provided by <a href="https://github.com/murolem/wplace-archives" target="_blank" rel="noopener noreferrer">murolem</a>, and previously <a href="https://www.reddit.com/user/OkInfluence36/" target="_blank" rel="noopener noreferrer">u/OkInfluence36</a>.</p>
-      <p>This site is hosted on my own hardware and Cloudflare free tier, with enough storage to last one year of daily archives!</p>
-      <p>Report bugs on <a href="https://github.com/Hugi-R/wplace-archive-world-map" target="_blank" rel="noopener noreferrer">GitHub</a> or to <a href="https://www.reddit.com/user/EralyonDotnet/" target="_blank" rel="noopener noreferrer">u/EralyonDotnet</a>.</p>
-    </div>
-  </div>
-  <div id="coord-input">
-    <form id="goto-coord-form" style="display:flex;gap:6px;align-items:center;">
-      <label for="coord-zoom" style="font-size:15px;">Zoom:</label>
-      <input id="coord-zoom" type="number" step="any" style="width:80px;font-size:15px;" placeholder="Zoom" required>
-      <label for="coord-lat" style="font-size:15px;">Lat:</label>
-      <input id="coord-lat" type="number" step="any" style="width:80px;font-size:15px;" placeholder="Lat" required>
-      <label for="coord-lng" style="font-size:15px;">Lng:</label>
-      <input id="coord-lng" type="number" step="any" style="width:80px;font-size:15px;" placeholder="Lng" required>
-      <button type="submit" style="font-size:15px;">Go</button>
-    </form>
-  </div>
   <div id="version-select">
-    Version:
+    <label id="version-label" for="wplace-version-slider">Version:</label>
     <input type="range" id="wplace-version-slider" min="0" max="0" value="0" step="1" class="version-slider" list="wplace-version-ticks">
     <span id="wplace-version-label" style="width: 14ch;"></span>
   </div>
-  <datalist id="wplace-version-ticks"></datalist>
-  <div id="overlay-toggle">
-    <label><input type="checkbox" id="toggle-tile-overlay"> Show tile overlay</label>
+  <div id="extra">
+    <datalist id="wplace-version-ticks"></datalist>
+    <div id="coord-input">
+      <form id="goto-coord-form" style="display:flex;gap:6px;align-items:center;">
+        <label for="coord-zoom" style="font-size:15px;">Zoom:</label>
+        <input id="coord-zoom" type="number" step="any" style="width:60px;font-size:15px;" placeholder="Zoom" required>
+        <label for="coord-lat" style="font-size:15px;">Lat:</label>
+        <input id="coord-lat" type="number" step="any" style="width:80px;font-size:15px;" placeholder="Lat" required>
+        <label for="coord-lng" style="font-size:15px;">Lng:</label>
+        <input id="coord-lng" type="number" step="any" style="width:80px;font-size:15px;" placeholder="Lng" required>
+        <button type="submit" style="font-size:15px;">Go</button>
+      </form>
+    </div>
+    <div id="overlay-toggle">
+      <label><input type="checkbox" id="toggle-tile-overlay"> Show tile overlay</label>
+    </div>
+    <div id="encart">
+      <span id="encart-close">&times;</span>
+      <div id="encart-content">
+        <p>Explore Wplace world map archives at any zoom level, starting from August 2025.</p>
+        <p>Right-click the map for more tools</p>
+        <p>Each zoom level halves the image resolution. The pixel is chosen by majority. Deleted pixels can linger up to a week.</p>
+        <p>Data kindly provided by <a href="https://github.com/murolem/wplace-archives" target="_blank" rel="noopener noreferrer">murolem</a>, and previously <a href="https://www.reddit.com/user/OkInfluence36/" target="_blank" rel="noopener noreferrer">u/OkInfluence36</a>.</p>
+        <p>This site is hosted on my own hardware and Cloudflare free tier, with enough storage to last one year of daily archives!</p>
+        <p>Report bugs on <a href="https://github.com/Hugi-R/wplace-archive-world-map" target="_blank" rel="noopener noreferrer">GitHub</a> or to <a href="https://www.reddit.com/user/EralyonDotnet/" target="_blank" rel="noopener noreferrer">u/EralyonDotnet</a>.</p>
+      </div>
+    </div>
   </div>
 
   <script src="https://unpkg.com/maplibre-gl@5.7.1/dist/maplibre-gl.js"></script>
