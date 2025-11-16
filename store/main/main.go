@@ -48,6 +48,8 @@ func Main() error {
 		reader = &store.Reader7z{}
 	} else if isDir(*from) {
 		reader = &store.ReaderFolder{}
+	} else if strings.HasSuffix(*from, ".tar.gz") || strings.HasSuffix(*from, ".tgz") {
+		reader = &store.ReaderTarGz{}
 	} else {
 		return fmt.Errorf("unsupported input format: %s", *from)
 	}

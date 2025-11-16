@@ -138,7 +138,7 @@ func (g *Ingester) worker(jobChan chan Job, wg *sync.WaitGroup) {
 	for j := range jobChan {
 		skip, err := g.processData(j)
 		if err != nil {
-			fmt.Printf("Failed job %v: %v", j, err)
+			fmt.Printf("Failed job %d/%d/%d (CRC: %d) : %v\n", j.Z, j.X, j.Y, j.Crc32, err)
 			g.metrics.Fail()
 		} else {
 			if skip {
