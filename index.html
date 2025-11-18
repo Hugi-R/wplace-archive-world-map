@@ -20,6 +20,26 @@
   <link href="https://unpkg.com/maplibre-gl@5.7.1/dist/maplibre-gl.css" rel="stylesheet" />
   <style>
     body, html { height: 100%; margin: 0; }
+    button {
+      background: ButtonFace;
+      color: ButtonText;
+      padding: 2px 4px;
+      border-radius: 4px;
+      font-size: 0px;
+      border: none;
+      box-shadow: 2px 2px 4px rgba(0,0,0,0.20);
+      outline: 2px solid rgba(0,0,0,0.10);
+      transition: background 0.2s, box-shadow 0.2s, outline 0.2s;
+      cursor: pointer;
+    }
+    button:hover {
+      background: Highlight;
+      color: HighlightText;
+    }
+    button.toggled {
+      background: AccentColor;
+      color: AccentColorText;
+    }
     #map { position: absolute; top: 0; bottom: 0; width: 100%; }
     #extra {
       position: absolute;
@@ -151,6 +171,13 @@
         <p>Report bugs on <a href="https://github.com/Hugi-R/wplace-archive-world-map" target="_blank" rel="noopener noreferrer">GitHub</a> or to <a href="https://www.reddit.com/user/EralyonDotnet/" target="_blank" rel="noopener noreferrer">u/EralyonDotnet</a>.</p>
       </div>
     </div>
+  </div>
+  <div id="transparency-toggle" style="position: absolute; bottom: 10px; left: 10px; z-index: 3;">
+  <button id="toggle-transparency" title="Toggle art opacity" style="padding: 6px;">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" width="22" height="22" fill="currentColor">
+        <path d="M440-440v-80h80v80h-80Zm-80 80v-80h80v80h-80Zm160 0v-80h80v80h-80Zm80-80v-80h80v80h-80Zm-320 0v-80h80v80h-80Zm-80 320q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120H200Zm80-80h80v-80h-80v80Zm160 0h80v-80h-80v80Zm320 0v-80 80Zm-560-80h80v-80h80v80h80v-80h80v80h80v-80h80v80h80v-80h-80v-80h80v-320H200v320h80v80h-80v80Zm0 80v-560 560Zm560-240v80-80ZM600-280v80h80v-80h-80Z"></path>
+      </svg>
+    </button>
   </div>
 
   <script src="https://unpkg.com/maplibre-gl@5.7.1/dist/maplibre-gl.js"></script>
@@ -678,6 +705,21 @@
       overlayToggle.addEventListener('change', drawTileOverlay);
       // Initial draw
       drawTileOverlay();
+    });
+
+    // --- Transparency Toggle ---
+    document.addEventListener('DOMContentLoaded', function() {
+      const transparencyButton = document.getElementById('toggle-transparency');
+      let isTransparent = false;
+
+      transparencyButton.addEventListener('click', function() {
+        const wplaceLayer = map.getLayer('wplace');
+        if (wplaceLayer) {
+          isTransparent = !isTransparent;
+          map.setPaintProperty('wplace', 'raster-opacity', isTransparent ? 0.3 : 1);
+          transparencyButton.classList.toggle('toggled', isTransparent);
+        }
+      });
     });
   </script>
 </body>
