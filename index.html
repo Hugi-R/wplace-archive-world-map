@@ -19,26 +19,96 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link href="https://unpkg.com/maplibre-gl@5.7.1/dist/maplibre-gl.css" rel="stylesheet" />
   <style>
-    body, html { height: 100%; margin: 0; }
+    :root {
+      /* Primary UI colors */
+      --button-face: #f5f5fa;
+      --button-text: #222;
+      --highlight: #cce4ff;
+      --highlight-text: #222;
+      --accent-color: #3399ff;
+      --accent-color-text: #fff;
+
+      /* Surfaces and panels */
+      --panel-bg: rgba(255,255,255,0.95);
+      --panel-bg-weak: rgba(255,255,255,0.8);
+      --border-color: #e0e0e0;
+
+      /* Shadows and outlines */
+      --shadow-lg: 0 2px 8px rgba(0,0,0,0.10);
+      --shadow-sm: 2px 2px 4px rgba(0,0,0,0.20);
+      --shadow-mid: 0 2px 8px rgba(0,0,0,0.15);
+      --outline-color: rgba(0,0,0,0.10);
+
+      /* Context / menus */
+      --context-bg: var(--panel-bg);
+      --context-border: #ccc;
+      --muted-text: #888;
+      --muted-text-strong: #333;
+
+      /* Tile overlay (canvas) colors */
+      --tile-overlay-stroke: rgba(0,0,255,0.5);
+      --tile-overlay-fill: rgba(0,0,255,1);
+      --tile-overlay-id-outline: rgba(255,255,255,0.95);
+      /* Page-level colors */
+      --bg: #ffffff; /* page background */
+      --text-color: #222222; /* default body text */
+
+      /* Links */
+      --link-color: #1a66cc;
+      --link-visited: #5a4ea3;
+      --link-hover: #0d4fa6;
+
+      /* Form controls */
+      --input-bg: #ffffff;
+      --input-border: #dcdcdc;
+      /* Focus / ring */
+      --focus-ring: rgba(51,153,255,0.22);
+    }
+    body, html { 
+      height: 100%;
+      margin: 0;
+      background: var(--bg);
+      color: var(--text-color);
+      accent-color: var(--accent-color);
+      font-family: sans-serif;
+    }
+    input, select, textarea { background: var(--input-bg); border: 1px solid var(--input-border); color: var(--text-color); }
+    a { color: var(--link-color); }
+    a:visited { color: var(--link-visited); }
+    a:hover { color: var(--link-hover); }
+
+    /* Focus outlines and visible focus rings for keyboard users */
+    :focus { outline: none; }
+    :focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, a:focus-visible {
+      outline: 2px solid var(--accent-color);
+      outline-offset: 2px;
+      box-shadow: 0 0 0 4px var(--focus-ring);
+    }
+    /* Slightly different handling for small controls like checkboxes/radios */
+    input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
+      box-shadow: 0 0 0 4px var(--focus-ring);
+      border-radius: 4px;
+    }
+    
     button {
-      background: ButtonFace;
-      color: ButtonText;
+      background: var(--button-face);
+      color: var(--button-text);
       padding: 2px 4px;
       border-radius: 4px;
       font-size: 0px;
       border: none;
-      box-shadow: 2px 2px 4px rgba(0,0,0,0.20);
-      outline: 2px solid rgba(0,0,0,0.10);
+      box-shadow: var(--shadow-sm);
+      outline: 2px solid var(--outline-color);
       transition: background 0.2s, box-shadow 0.2s, outline 0.2s;
       cursor: pointer;
     }
     button:hover {
-      background: Highlight;
-      color: HighlightText;
+      background: var(--highlight);
+      color: var(--highlight-text);
     }
     button.toggled {
-      background: AccentColor;
-      color: AccentColorText;
+      background: var(--accent-color);
+      color: var(--accent-color-text);
     }
     #map { position: absolute; top: 0; bottom: 0; width: 100%; }
     #extra {
@@ -53,10 +123,9 @@
       pointer-events: auto;
     }
     #coord-input {
-      background: rgba(255,255,255,0.8);
+      background: var(--panel-bg-weak);
       padding: 6px 12px;
       border-radius: 4px;
-      font-family: sans-serif;
       font-size: 16px;
       /* Ensure it doesn't expand too much on narrow screens */
       max-width: calc(100vw - 40px);
@@ -72,23 +141,21 @@
       right: 0;
       top: 0;
       z-index: 100;
-      background: rgba(255,255,255,0.95);
+      background: var(--panel-bg);
       padding: 12px 12px;
       box-sizing: border-box;
       border-radius: 0;
-      font-family: sans-serif;
       font-size: 17px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.10);
+      box-shadow: var(--shadow-lg);
       display: flex;
       align-items: center;
       gap: 16px;
-      border-bottom: 1px solid #e0e0e0;
+      border-bottom: 1px solid var(--border-color);
     }
     #overlay-toggle {
-      background: rgba(255,255,255,0.8);
+      background: var(--panel-bg-weak);
       padding: 6px 12px;
       border-radius: 4px;
-      font-family: sans-serif;
       font-size: 16px;
       z-index: 3;
       align-self: flex-start;
@@ -96,16 +163,15 @@
     #encart {
       position: relative; /* allow #encart-close (absolute) to position relative to this box */
       z-index: 20;
-      background: rgba(255,255,255,0.95);
+      background: var(--panel-bg);
       border-radius: 4px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.10);
+      box-shadow: var(--shadow-lg);
       /* make room on the right for the close button */
       padding: 10px 24px 10px 16px;
-      font-family: sans-serif;
       font-size: 16px;
       min-width: 220px;
       max-width: 320px;
-      border: 1px solid #e0e0e0;
+      border: 1px solid var(--border-color);
       align-self: flex-start;
     }
     #encart-close {
@@ -114,11 +180,16 @@
       right: 10px;
       cursor: pointer;
       font-size: 18px;
-      color: #888;
+      color: var(--muted-text);
       transition: color 0.2s;
+      background: transparent;
+      border: none;
+      padding: 0;
+      line-height: 1;
+      appearance: none;
     }
     #encart-close:hover {
-      color: #333;
+      color: var(--muted-text-strong);
     }
     #encart-content {
       margin-top: 2px;
@@ -133,6 +204,19 @@
         display: none !important;
       }
     }
+    #context-menu {
+      position: absolute; /* positioning is controlled from JS */
+      display: none;
+      z-index: 10;
+      background: var(--context-bg);
+      border: 1px solid var(--context-border);
+      border-radius: 6px;
+      box-shadow: var(--shadow-mid);
+      padding: 8px 0;
+      font-size: 15px;
+      color: var(--button-text);
+    }
+    #context-menu > div { padding: 8px 24px; cursor: pointer; }
   </style>
 </head>
 <body>
@@ -161,7 +245,7 @@
       <label><input type="checkbox" id="toggle-tile-overlay"> Show tile overlay</label>
     </div>
     <div id="encart">
-      <span id="encart-close">&times;</span>
+      <button id="encart-close" aria-label="Close encart" title="Close encart">&times;</button>
       <div id="encart-content">
         <p>Explore Wplace world map archives at any zoom level, starting from August 2025.</p>
         <p>Right-click the map for more tools</p>
@@ -494,22 +578,15 @@
     });
 
     // --- Custom Right-Click Menu ---
-    // Create menu element
+    // Create menu element (colors & spacing handled by CSS variables/rules)
     const menu = document.createElement('div');
     menu.id = 'context-menu';
     menu.style.position = 'absolute';
     menu.style.display = 'none';
     menu.style.zIndex = '10';
-    menu.style.background = 'rgba(255,255,255,0.95)';
-    menu.style.border = '1px solid #ccc';
-    menu.style.borderRadius = '6px';
-    menu.style.boxShadow = '0 2px 8px rgba(0,0,0,0.15)';
-    menu.style.padding = '8px 0';
-    menu.style.fontFamily = 'sans-serif';
-    menu.style.fontSize = '15px';
     menu.innerHTML = `
-      <div id="download-tile" style="padding:8px 24px;cursor:pointer;">Download tile</div>
-      <div id="go-wplace-live" style="padding:8px 24px;cursor:pointer;">Go wplace.live</div>
+      <div id="download-tile">Download tile</div>
+      <div id="go-wplace-live">Go wplace.live</div>
     `;
     document.body.appendChild(menu);
 
@@ -662,6 +739,11 @@
         const zoom = Math.min(Math.floor(map.getZoom()), 11);
         const bounds = map.getBounds();
         const tileCount = Math.pow(2, zoom);
+        // Read canvas colors from CSS variables so they're centralized in :root
+        const css = getComputedStyle(document.documentElement);
+        const tileStroke = (css.getPropertyValue('--tile-overlay-stroke') || 'rgba(0,0,255,0.5)').trim();
+        const tileFill = (css.getPropertyValue('--tile-overlay-fill') || 'rgba(0,0,255,1)').trim();
+        const idOutline = (css.getPropertyValue('--tile-overlay-id-outline') || 'rgba(255,255,255,0.95)').trim();
         // Calculate visible tile range
         const minX = Math.max(0, lng2tileX(bounds.getWest(), zoom));
         const maxX = Math.min(tileCount - 1, lng2tileX(bounds.getEast(), zoom));
@@ -678,7 +760,7 @@
             const p1 = map.project([west, north]);
             const p2 = map.project([east, south]);
             // Draw rectangle
-            ctx.strokeStyle = 'rgba(0,0,255,0.5)';
+            ctx.strokeStyle = tileStroke;
             ctx.lineWidth = 3;
             ctx.strokeRect(p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
             // Draw ID
@@ -689,10 +771,10 @@
             // Outline
             ctx.lineWidth = 3;
             ctx.lineJoin = 'round';
-            ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+            ctx.strokeStyle = idOutline;
             ctx.strokeText(id, (p1.x + p2.x) / 2, (p1.y + p2.y) / 2);
             // Fill
-            ctx.fillStyle = 'rgba(0,0,255,1)';
+            ctx.fillStyle = tileFill;
             ctx.fillText(id, (p1.x + p2.x) / 2, (p1.y + p2.y) / 2);
           }
         }
