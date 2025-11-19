@@ -183,9 +183,11 @@ func parseReleaseTime(name string) (time.Time, error) {
 // ProcessedVersionFromDate store version in the format vMajor.Minor where:
 // Major: week number since 1st Jan 2025
 // Minor: hour in the week (from 0 to 167) (zero-padded to 3 digits)
+// IsBase: true if base version (no minor when converted to string)
 type ProcessedVersion struct {
-	Major int
-	Minor int
+	Major  int
+	Minor  int
+	IsBase bool
 }
 
 func ProcessedVersionFromDate(datetime time.Time) ProcessedVersion {
@@ -193,16 +195,19 @@ func ProcessedVersionFromDate(datetime time.Time) ProcessedVersion {
 	weeksSince := int(datetime.Sub(epoch).Hours() / (24 * 7))
 	hourInWeek := int(datetime.Sub(epoch).Hours()) % (24 * 7)
 	return ProcessedVersion{
-		Major: weeksSince,
-		Minor: hourInWeek,
+		Major:  weeksSince,
+		Minor:  hourInWeek,
+		IsBase: false,
 	}
 }
 
 func ProcessedVersionFromString(s string) (ProcessedVersion, error) {
 	var major, minor int
+	isBase := false
 	s = strings.TrimPrefix(s, "v")
 	parts := strings.Split(s, ".")
 	if len(parts) == 1 {
+		isBase = true
 		_, err := fmt.Sscanf(parts[0], "%d", &major)
 		if err != nil {
 			return ProcessedVersion{}, fmt.Errorf("invalid processed version: %s", s)
@@ -220,12 +225,16 @@ func ProcessedVersionFromString(s string) (ProcessedVersion, error) {
 		return ProcessedVersion{}, fmt.Errorf("invalid processed version: %s", s)
 	}
 	return ProcessedVersion{
-		Major: major,
-		Minor: minor,
+		Major:  major,
+		Minor:  minor,
+		IsBase: isBase,
 	}, nil
 }
 
 func (pv ProcessedVersion) String() string {
+	if pv.IsBase {
+		return fmt.Sprintf("v%d", pv.Major)
+	}
 	return fmt.Sprintf("v%d.%03d", pv.Major, pv.Minor)
 }
 
@@ -371,16 +380,17 @@ func MakeJobs(releases []GithubRelease, archivesDones *ArchivesDones) ([]Job, er
 			isDiff = true
 			baseName = base
 		}
+		pv.IsBase = !isDiff
 		// If not diff, record new base
 		if !isDiff {
-			newBases[pv.Major] = ProcessedFileName(archive.ProcessedVersion, archive.Datetime)
+			newBases[pv.Major] = ProcessedFileName(pv, archive.Datetime)
 		}
 
 		job := Job{
 			isDiff:        isDiff,
 			base:          baseName,
 			archive:       archive,
-			processedFile: ProcessedFileName(archive.ProcessedVersion, archive.Datetime),
+			processedFile: ProcessedFileName(pv, archive.Datetime),
 		}
 		newDays[day] = true
 		jobs = append(jobs, job)

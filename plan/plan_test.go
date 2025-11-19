@@ -90,12 +90,12 @@ func TestMakeJobs(t *testing.T) {
 		{Datetime: time.Date(2025, 1, 8, 12, 0, 0, 0, time.UTC), ProcessedVersion: PV("v1.036")},
 		{Datetime: time.Date(2025, 1, 8, 00, 0, 0, 0, time.UTC), ProcessedVersion: PV("v1.024")},
 		{Datetime: time.Date(2025, 1, 7, 12, 0, 0, 0, time.UTC), ProcessedVersion: PV("v1.012")},
-		{Datetime: time.Date(2025, 1, 7, 00, 0, 0, 0, time.UTC), ProcessedVersion: PV("v1.000")},
+		{Datetime: time.Date(2025, 1, 7, 00, 0, 0, 0, time.UTC), ProcessedVersion: PV("v1")},
 		{Datetime: time.Date(2025, 1, 3, 00, 0, 0, 0, time.UTC), ProcessedVersion: PV("v0.048")},
 		{Datetime: time.Date(2025, 1, 2, 12, 0, 0, 0, time.UTC), ProcessedVersion: PV("v0.036")},
 		{Datetime: time.Date(2025, 1, 2, 00, 0, 0, 0, time.UTC), ProcessedVersion: PV("v0.024")},
 		{Datetime: time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC), ProcessedVersion: PV("v0.012")},
-		{Datetime: time.Date(2025, 1, 1, 00, 0, 0, 0, time.UTC), ProcessedVersion: PV("v0.000")},
+		{Datetime: time.Date(2025, 1, 1, 00, 0, 0, 0, time.UTC), ProcessedVersion: PV("v0")},
 	}
 
 	archivesDones := MakeArchiveDones([]os.DirEntry{
@@ -128,7 +128,7 @@ func TestMakeJobs(t *testing.T) {
 			if !job.isDiff {
 				t.Fatalf("expected job %d to be diff, got full", i)
 			}
-			if job.base != ProcessedFileName(PV("v1.000"), time.Date(2025, 1, 7, 0, 0, 0, 0, time.UTC)) {
+			if job.base != ProcessedFileName(PV("v1"), time.Date(2025, 1, 7, 0, 0, 0, 0, time.UTC)) {
 				t.Fatalf("expected job %d base to be v1.000_2025-01-07T00, got %s", i, job.base)
 			}
 		}
