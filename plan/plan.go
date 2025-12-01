@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path"
 	"strings"
 	"time"
 )
@@ -459,79 +458,6 @@ func (p Planner) PlanLatest() []Job {
 		processedFile: ProcessedFileName(latest.ProcessedVersion, latest.Datetime),
 	}
 	return []Job{job}
-}
-
-func PlanToCommands(plan []Job, metaBinFolder, workFolder, doneFolder, extractFolder string) string {
-	tmpProcessedFolder := path.Join(workFolder, "processed")
-	archivesFolder := path.Join(workFolder, "archives")
-	planCommands := "#!/bin/bash\nset -e\n\n"
-	planCommands += fmt.Sprintf("mkdir -p %s\n", tmpProcessedFolder)
-	planCommands += fmt.Sprintf("mkdir -p %s\n", archivesFolder)
-	planCommands += "\n"
-	for _, p := range plan {
-		base := ""
-		if p.isDiff {
-			base = fmt.Sprintf("--base %s", path.Join(doneFolder, p.base))
-		}
-		out := path.Join(tmpProcessedFolder, p.processedFile)
-
-		planCommands += fmt.Sprintf("echo 'Processing archive %s'\n", p.archive.Name)
-		// Download archive assets
-		assetsFolder := fmt.Sprintf("%s/%d", archivesFolder, p.archive.ID)
-		planCommands += fmt.Sprintf("mkdir -p %s\n", assetsFolder)
-		downloadAssetCommands := []string{}
-		for _, asset := range p.archive.Assets {
-			downloadAssetCommands = append(downloadAssetCommands, fmt.Sprintf("curl -L -o '%s/%s' '%s'", assetsFolder, asset.Name, asset.BrowserDownloadURL))
-		}
-		planCommands += strings.Join(downloadAssetCommands, " && ") + "\n"
-		archive := path.Join(assetsFolder, "full.tar.gz")
-		planCommands += fmt.Sprintf("cat %s/*.tar.gz.* > %s\n", assetsFolder, archive)
-
-		planCommands += fmt.Sprintf("rm -rf %s && mkdir %s && tar -xzf %s -C %s --strip-components=1\n", extractFolder, extractFolder, archive, extractFolder)
-		planCommands += fmt.Sprintf("%s/ingest %s --from %s --out %s\n", metaBinFolder, base, extractFolder, out)
-		planCommands += fmt.Sprintf("rm -rf %s\n", extractFolder)
-		planCommands += fmt.Sprintf("rm -rf %s\n", assetsFolder)
-		planCommands += fmt.Sprintf("%s/merge %s --target %s\n", metaBinFolder, base, out)
-		planCommands += fmt.Sprintf("sqlite3 %s 'PRAGMA journal_mode = DELETE;'\n", out)
-		planCommands += fmt.Sprintf("mv %s %s\n", out, path.Join(doneFolder, p.processedFile))
-		planCommands += "\n"
-	}
-	planCommands += "echo 'All done!'\n"
-	return planCommands
-}
-
-func main() {
-	metaBinFolder := os.Getenv("META_BIN_FOLDER")
-	if metaBinFolder == "" {
-		metaBinFolder = "."
-	}
-
-	url := os.Getenv("ARCHIVES_URL")
-	if url == "" {
-		url = "https://github.com/murolem/wplace-archives/releases"
-	}
-	workFolder := os.Getenv("META_WORK_FOLDER")
-	if workFolder == "" {
-		workFolder = "./wplace-work"
-	}
-	extractFolder := os.Getenv("META_TMP_FOLDER") // can be useful to extract on RAM disk
-	if extractFolder == "" {
-		extractFolder = path.Join(workFolder, "extract")
-	}
-	doneFolder := os.Getenv("META_DONE_FOLDER")
-	if doneFolder == "" {
-		doneFolder = "./wplace-done"
-	}
-
-	planner := Planner{
-		doneFolder:   doneFolder,
-		ghReleaseUrl: url,
-	}
-
-	plan := planner.PlanDaily()
-	log.Printf("Planned %d jobs\n", len(plan))
-	commands := PlanToCommands(plan, metaBinFolder, workFolder, doneFolder, extractFolder)
-	fmt.Println(commands)
 }
 
 // Utils

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/Hugi-R/wplace-archive-world-map/merger"
-	"github.com/Hugi-R/wplace-archive-world-map/store"
 )
 
 func Main() error {
@@ -24,38 +23,7 @@ func Main() error {
 		return fmt.Errorf("missing required flag: --from")
 	}
 
-	tileDB, err := store.NewTileDB(*target, false)
-	if err != nil {
-		return fmt.Errorf("failed to create target tile database: %v", err)
-	}
-	defer tileDB.DB.Close()
-
-	var baseDB *store.TileDB = nil
-	if *base != "" {
-		db, err := store.NewTileDB(*base, true)
-		if err != nil {
-			return fmt.Errorf("failed to create base tile database: %v", err)
-		}
-		baseDB = &db
-	}
-
-	if baseDB == nil {
-		fmt.Printf("Starting merging tiles from z=%d using %d workers.\n", *initZ, *workers)
-	} else {
-		fmt.Printf("Starting merging tiles from z=%d using %d workers. Using %s as base.\n", *initZ, *workers, *base)
-	}
-
-	merger, err := merger.NewMerger(&tileDB, *workers, *initZ, false, baseDB)
-	if err != nil {
-		return fmt.Errorf("failed to create merger: %v", err)
-	}
-	merger.Merge()
-	if baseDB != nil {
-		baseDB.Close()
-	}
-	tileDB.Close()
-	fmt.Println("Done")
-	return nil
+	return merger.Merge(*target, *base, *workers, *initZ)
 }
 
 func main() {
