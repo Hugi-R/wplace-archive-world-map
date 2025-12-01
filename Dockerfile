@@ -12,21 +12,16 @@ COPY ./tileserver tileserverSrc
 RUN go build -o tileserver ./tileserverSrc/server.go
 RUN GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CXX=x86_64-w64-mingw32-g++ CC=x86_64-w64-mingw32-gcc go build -o tileserver.exe tileserverSrc/server.go
 COPY ./store store
-RUN go build -o ingest store/main/main.go
-RUN GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CXX=x86_64-w64-mingw32-g++ CC=x86_64-w64-mingw32-gcc go build -o ingest.exe store/main/main.go
-# Merger depends on store
 COPY ./merger merger
-RUN go build -o merge merger/main/main.go
-RUN GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CXX=x86_64-w64-mingw32-g++ CC=x86_64-w64-mingw32-gcc go build -o merge.exe merger/main/main.go
-COPY ./metadatadb metadatadb
-RUN go build -o meta metadatadb/metadatadb.go
-RUN GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CXX=x86_64-w64-mingw32-g++ CC=x86_64-w64-mingw32-gcc go build -o meta.exe metadatadb/metadatadb.go
+COPY ./plan plan
+RUN go build -o import ./plan/
+RUN GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CXX=x86_64-w64-mingw32-g++ CC=x86_64-w64-mingw32-gcc go build -o import.exe ./plan/
 
 FROM scratch AS windows
-COPY --from=builder /app/merge.exe /app/ingest.exe /app/tileserver.exe /app/meta.exe /
+COPY --from=builder /app/import.exe /app/tileserver.exe /
 
 FROM scratch AS linux
-COPY --from=builder /app/merge /app/ingest /app/tileserver /app/meta /
+COPY --from=builder /app/import /app/tileserver /
 
 FROM gcr.io/distroless/base-debian12 as tileserver
 COPY --chmod=0755 --from=builder /app/tileserver /
