@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -168,20 +169,18 @@ func DisplayPlan(plan []Job) {
 }
 
 func main() {
-	metaBinFolder := os.Getenv("META_BIN_FOLDER")
-	if metaBinFolder == "" {
-		metaBinFolder = "."
-	}
+	planType := flag.String("type", "daily", "Plan type: latest, daily, or all")
+	flag.Parse()
 
-	url := os.Getenv("ARCHIVES_URL")
+	url := os.Getenv("WPLACE_ARCHIVES_URL")
 	if url == "" {
 		url = "https://github.com/murolem/wplace-archives/releases"
 	}
-	workFolder := os.Getenv("META_WORK_FOLDER")
+	workFolder := os.Getenv("WPLACE_WORK_FOLDER")
 	if workFolder == "" {
 		workFolder = "./wplace-work"
 	}
-	doneFolder := os.Getenv("META_DONE_FOLDER")
+	doneFolder := os.Getenv("WPACE_DONE_FOLDER")
 	if doneFolder == "" {
 		doneFolder = "./wplace-done"
 	}
@@ -191,7 +190,18 @@ func main() {
 		ghReleaseUrl: url,
 	}
 
-	plan := planner.PlanDaily()
+	var plan []Job
+	switch *planType {
+	case "latest":
+		plan = planner.PlanLatest()
+	case "daily":
+		plan = planner.PlanDaily()
+	case "all":
+		plan = planner.PlanAll()
+	default:
+		log.Fatalf("Invalid plan type: %s. Must be one of: latest, daily, all", *planType)
+	}
+
 	DisplayPlan(plan)
 	err := ExecPlan(plan, workFolder, doneFolder)
 	if err != nil {
