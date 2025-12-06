@@ -9,7 +9,7 @@ This is what's behind [wplace.eralyon.net](https://wplace.eralyon.net/).
 - Ingest and store map tiles from archives into an indexed SQLite DB.
 - Incremental ingest, called `diff`, to save on storage.
 - Merge and process tiles for various zoom levels.
-- Serve tiles via an HTTP server using minimal CPU. [wplace.eralyon.net](https://wplace.eralyon.net/) run on a single core of an Intel Celeron J4005
+- Serve tiles via an HTTP server using minimal CPU. [wplace.eralyon.net](https://wplace.eralyon.net/) runs on a single core of an Intel Celeron J4005.
 - A simple map web page served by the tile server.
 
 ## Getting Started
@@ -28,13 +28,13 @@ This is what's behind [wplace.eralyon.net](https://wplace.eralyon.net/).
 ```
 
 ### Import
-Import is the tool used to update [wplace.eralyon.net](https://wplace.eralyon.net/), it download, ingest and merge an archive automatically.
+Import is the tool used to update [wplace.eralyon.net](https://wplace.eralyon.net/), it downloads, ingests, and merges an archive automatically.
 
-Optional, configure path. These are the dafaults:
+Optional, configure path. These are the defaults:
 ```shell
 export WPLACE_ARCHIVES_URL="https://github.com/murolem/wplace-archives/releases"
 export WPLACE_WORK_FOLDER="./wplace-work"
-export WPACE_DONE_FOLDER="./wplace-done"
+export WPLACE_DONE_FOLDER="./wplace-done"
 ```
 
 To get the latest archive available, run:
@@ -55,7 +55,7 @@ Then to update it every day:
 ### Ingest (advanced)
 Ingest an archive into a DB. PNGs are converted to the palette used by this project.
 
-> Supported archive type: tar.gz, 7zip, folder
+> Supported archive types: tar.gz, 7zip, folder
 
 The files inside the archive should be like `*/X/Y.png` where X and Y are coordinates of the tile.
 
@@ -67,7 +67,7 @@ Ingest can build an incremental DB containing only the changed pixels compared t
 ```shell
 ./bin/ingest --base data/archive-1.db --from wplace-archives/archive-2.7z --out data/archive-2.db --workers 16
 ```
-This saves a lot of storage, and speeds up ingest when few tiles change. When many tiles change, ingest can be slower due to the extra compute required for diffs.
+This saves a lot of storage and speeds up ingest when few tiles change. When many tiles change, ingest can be slower due to the extra compute required for diffs.
 
 **KNOWN LIMITATION**: Unchanged pixels are encoded as transparent pixels. This means that if a pixel in Wplace changed from a color to transparent, that change is lost in the diff. This behavior simplifies applying diffs at runtime (in the browser) but is not an accurate archival format.
 
@@ -111,7 +111,7 @@ DATA_PATH=./data ./bin/tileserver
 The server is available at `http://localhost:8080`.
 
 ## Disclaimer
-- This is a cleaned-up version of a bunch of experiments. Documentation and tests are sparse, and will likely remain so.
+- This is a cleaned-up version of a bunch of experiments. Documentation and tests are sparse and will likely remain so.
 - GenAI was used in parts of this project: for boilerplate Go code, and much of the HTML/CSS/JS.
 
 ## License

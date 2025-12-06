@@ -180,7 +180,7 @@ func main() {
 	if workFolder == "" {
 		workFolder = "./wplace-work"
 	}
-	doneFolder := os.Getenv("WPACE_DONE_FOLDER")
+	doneFolder := os.Getenv("WPLACE_DONE_FOLDER")
 	if doneFolder == "" {
 		doneFolder = "./wplace-done"
 	}
