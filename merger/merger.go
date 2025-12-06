@@ -25,6 +25,7 @@ type Merger struct {
 }
 
 type metrics struct {
+	ticker    *time.Ticker
 	resChan   chan job
 	merged    int64
 	skipped   int64
@@ -76,6 +77,7 @@ func NewMerger(store *store.TileDB, workers int, initialZ int, force bool, base 
 
 func (m *Merger) Merge() {
 	go m.reportMetrics()
+	defer m.stopMetrics()
 
 	// Traverse levels from "bottom" to "upper"
 	for z := m.initialZ; z >= 0; z-- {
@@ -119,11 +121,10 @@ func (m *Merger) mergeLevel(z int) {
 func (m *Merger) reportMetrics() {
 	const tickRate = 10
 
-	ticker := time.NewTicker(tickRate * time.Second)
-	defer ticker.Stop()
+	m.metrics.ticker = time.NewTicker(tickRate * time.Second)
 
 	go func() {
-		for range ticker.C {
+		for range m.metrics.ticker.C {
 			merged := m.metrics.merged
 			rate := float64(merged-m.metrics.lastMerge) / tickRate
 			m.metrics.lastMerge = merged
@@ -144,6 +145,11 @@ func (m *Merger) reportMetrics() {
 			m.metrics.empty++
 		}
 	}
+}
+
+func (m *Merger) stopMetrics() {
+	m.metrics.ticker.Stop()
+	close(m.metrics.resChan)
 }
 
 func (m *Merger) worker(jobChan chan job, wg *sync.WaitGroup) {
@@ -309,4 +315,39 @@ func (m *Merger) mergeTileAvg(z, x, y int) error {
 	}
 	err = m.store.PutTileAutoCRC(z, x, y, data.Bytes())
 	return err
+}
+
+func Merge(target, base string, initZ, workers int) error {
+	tileDB, err := store.NewTileDB(target, false)
+	if err != nil {
+		return fmt.Errorf("failed to create target tile database: %v", err)
+	}
+	defer tileDB.DB.Close()
+
+	var baseDB *store.TileDB = nil
+	if base != "" {
+		db, err := store.NewTileDB(base, true)
+		if err != nil {
+			return fmt.Errorf("failed to create base tile database: %v", err)
+		}
+		baseDB = &db
+	}
+
+	if baseDB == nil {
+		fmt.Printf("Starting merging tiles from z=%d using %d workers.\n", initZ, workers)
+	} else {
+		fmt.Printf("Starting merging tiles from z=%d using %d workers. Using %s as base.\n", initZ, workers, base)
+	}
+
+	merger, err := NewMerger(&tileDB, workers, initZ, false, baseDB)
+	if err != nil {
+		return fmt.Errorf("failed to create merger: %v", err)
+	}
+	merger.Merge()
+	if baseDB != nil {
+		baseDB.Close()
+	}
+	tileDB.Close()
+	fmt.Println("Done")
+	return nil
 }

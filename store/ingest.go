@@ -3,6 +3,8 @@ package store
 import (
 	"bytes"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,6 +23,7 @@ type Ingester struct {
 }
 
 type metrics struct {
+	ticker  *time.Ticker
 	read     atomic.Int64
 	lastRead atomic.Int64
 	done     atomic.Int64
@@ -69,10 +72,9 @@ func (m *metrics) CrcSkip() {
 func (m *metrics) ReportMetrics() {
 	const tickRate = 5
 
-	ticker := time.NewTicker(tickRate * time.Second)
-	defer ticker.Stop()
+	m.ticker = time.NewTicker(tickRate * time.Second)
 
-	for range ticker.C {
+	for range m.ticker.C {
 		read := m.read.Load()
 		lastRead := m.lastRead.Swap(read)
 		readRate := float64(read-lastRead) / tickRate
@@ -85,6 +87,10 @@ func (m *metrics) ReportMetrics() {
 		crcskip := m.crcskip.Load()
 		fmt.Printf("Rate: %.2f/s, Done: %d, Success: %d, Skip: %d, Fail: %d. Read rate: %.2f, Read: %d, CrcSkip: %d\n", rate, done, success, skip, fail, readRate, read, crcskip)
 	}
+}
+
+func (m *metrics) Stop() {
+	m.ticker.Stop()
 }
 
 func (g *Ingester) processData(j Job) (bool, error) {
@@ -138,7 +144,7 @@ func (g *Ingester) worker(jobChan chan Job, wg *sync.WaitGroup) {
 	for j := range jobChan {
 		skip, err := g.processData(j)
 		if err != nil {
-			fmt.Printf("Failed job %v: %v", j, err)
+			fmt.Printf("Failed job %d/%d/%d (CRC: %d) : %v\n", j.Z, j.X, j.Y, j.Crc32, err)
 			g.metrics.Fail()
 		} else {
 			if skip {
@@ -152,6 +158,7 @@ func (g *Ingester) worker(jobChan chan Job, wg *sync.WaitGroup) {
 
 func (g *Ingester) Ingest(read func() (Job, bool, error)) {
 	go g.metrics.ReportMetrics()
+	defer g.metrics.Stop()
 
 	jobChan := make(chan Job, 200)
 	var wg sync.WaitGroup
@@ -191,4 +198,52 @@ func NewDiffIngester(tileDB TileDB, workers int, force bool, baseDb TileDB) Inge
 	g.useDiff = true
 	g.baseDB = baseDb
 	return g
+}
+
+func isDir(path string) bool {
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	if fileInfo.IsDir() {
+		return true
+	}
+	return false
+}
+
+func Ingest(in, out, base string, workers int) error {
+	tileDB, err := NewTileDB(out, false)
+	if err != nil {
+		return fmt.Errorf("failed to create tile database %s: %w", out, err)
+	}
+	defer tileDB.DB.Close()
+
+	var reader Reader
+	if strings.HasSuffix(in, ".7z") {
+		reader = &Reader7z{}
+	} else if isDir(in) {
+		reader = &ReaderFolder{}
+	} else if strings.HasSuffix(in, ".tar.gz") || strings.HasSuffix(in, ".tgz") {
+		reader = &ReaderTarGz{}
+	} else {
+		return fmt.Errorf("unsupported input format: %s", in)
+	}
+	if err := reader.Open(in); err != nil {
+		return fmt.Errorf("failed to open input %s: %w", in, err)
+	}
+	defer reader.Close()
+
+	if base != "" {
+		baseDB, err := NewTileDB(base, true)
+		if err != nil {
+			return fmt.Errorf("failed to open base tile database %s: %w", base, err)
+		}
+		defer baseDB.DB.Close()
+		ingester := NewDiffIngester(tileDB, workers, false, baseDB)
+		ingester.Ingest(reader.ReadNextGood)
+	} else {
+		ingester := NewIngester(tileDB, workers, false)
+		ingester.Ingest(reader.ReadNextGood)
+	}
+	return nil
 }

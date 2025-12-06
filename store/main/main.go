@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/Hugi-R/wplace-archive-world-map/store"
@@ -37,37 +36,8 @@ func Main() error {
 		return fmt.Errorf("missing required flag: --out")
 	}
 
-	tileDB, err := store.NewTileDB(*out, false)
-	if err != nil {
-		return fmt.Errorf("failed to create tile database %s: %w", *out, err)
-	}
-	defer tileDB.DB.Close()
+	store.Ingest(*from, *out, *base, *workers)
 
-	var reader store.Reader
-	if strings.HasSuffix(*from, ".7z") {
-		reader = &store.Reader7z{}
-	} else if isDir(*from) {
-		reader = &store.ReaderFolder{}
-	} else {
-		return fmt.Errorf("unsupported input format: %s", *from)
-	}
-	if err := reader.Open(*from); err != nil {
-		return fmt.Errorf("failed to open input %s: %w", *from, err)
-	}
-	defer reader.Close()
-
-	if *base != "" {
-		baseDB, err := store.NewTileDB(*base, true)
-		if err != nil {
-			return fmt.Errorf("failed to open base tile database %s: %w", *base, err)
-		}
-		defer baseDB.DB.Close()
-		ingester := store.NewDiffIngester(tileDB, *workers, false, baseDB)
-		ingester.Ingest(reader.ReadNextGood)
-	} else {
-		ingester := store.NewIngester(tileDB, *workers, false)
-		ingester.Ingest(reader.ReadNextGood)
-	}
 	fmt.Println("Done")
 	return nil
 }

@@ -16,6 +16,7 @@ const defaultDbPath = "./tiles.db"
 const sqliteBusyTimeout = 20
 
 type TileDB struct {
+	dbPath   string
 	readOnly bool
 	DB       *sql.DB
 	stmtPut  *sql.Stmt
@@ -184,22 +185,32 @@ func (db *TileDB) prepareStmt() error {
 }
 
 func (db *TileDB) Close() {
-	db.stmtGet.Close()
-	db.stmtStat.Close()
-	db.stmList.Close()
 	if !db.readOnly {
-		db.stmtPut.Close()
-		db.stmtCrc.Close()
 		_, err := db.DB.Exec("PRAGMA wal_checkpoint(TRUNCATE)") // ensure WAL is merged
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to checkpoint WAL: %v", err)
+			fmt.Fprintf(os.Stderr, "failed to checkpoint WAL: %v\n", err)
 		}
-		_, err = db.DB.Exec("PRAGMA journal_mode = DELETE") // revert to the default behavior
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to revert journaling to non WAL: %v", err)
-		}
+
+		// Close and reopen to disable WAL
+		// WAL cannot be disabled if there's statements or handles open
+        _ = db.DB.Close()
+        db2, err := sql.Open("sqlite3", db.dbPath)
+        if err != nil {
+            fmt.Fprintf(os.Stderr, "failed to reopen database to revert WAL: %v\n", err)
+        } else {
+            _, err = db2.Exec("PRAGMA journal_mode = DELETE")
+            if err != nil {
+                fmt.Fprintf(os.Stderr, "failed to revert journaling to non WAL after reopen: %v\n", err)
+            } else {
+                fmt.Fprintln(os.Stderr, "successfully reverted WAL after reopen")
+            }
+            _ = db2.Close()
+        }
 	}
-	db.DB.Close()
+    // ensure original DB handle is closed if not already
+    if db.DB != nil {
+        _ = db.DB.Close()
+    }
 }
 
 func NewTileDB(dbPath string, readOnly bool) (TileDB, error) {
@@ -210,7 +221,7 @@ func NewTileDB(dbPath string, readOnly bool) (TileDB, error) {
 	if err != nil {
 		return TileDB{}, fmt.Errorf("failed to open database: %w", err)
 	}
-	tileDB := TileDB{DB: db, readOnly: readOnly}
+	tileDB := TileDB{DB: db, readOnly: readOnly, dbPath: dbPath}
 	if err := tileDB.init(); err != nil {
 		db.Close()
 		return TileDB{}, err
