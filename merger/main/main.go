@@ -23,7 +23,7 @@ func Main() error {
 		return fmt.Errorf("missing required flag: --from")
 	}
 
-	return merger.Merge(*target, *base, *workers, *initZ)
+	return merger.Merge(*target, *base, *initZ, *workers)
 }
 
 func main() {
