@@ -95,7 +95,7 @@
       color: var(--button-text);
       padding: 2px 4px;
       border-radius: 4px;
-      font-size: 0px;
+      font-size: 1rem;
       border: none;
       box-shadow: var(--shadow-sm);
       outline: 2px solid var(--outline-color);
@@ -106,6 +106,23 @@
       background: var(--highlight);
       color: var(--highlight-text);
     }
+
+    .zoom-button-container {
+      display: flex;
+      flex-direction: column;
+      font-weight: bold;
+      background: var(--button-face);
+      padding: 3px;
+      gap: 2px;
+      border-radius: 7px;
+      box-shadow: var(--shadow-sm);
+      
+      position: absolute; 
+      bottom: 50px; 
+      left: 10px; 
+      z-index: 3;
+    }
+
     button.toggled {
       background: var(--accent-color);
       color: var(--accent-color-text);
@@ -256,8 +273,20 @@
       </div>
     </div>
   </div>
+    <div class="zoom-button-container">
+      <button class="zoom-button" title="Zoom In" onclick="zoomIn()">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" width="22px" height="22px" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-6">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+        </svg>
+      </button>
+      <button class="zoom-button" title="Zoom Out" onclick="zoomOut()">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-6">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14" />
+        </svg>
+      </button>
+    </div>
   <div id="transparency-toggle" style="position: absolute; bottom: 10px; left: 10px; z-index: 3;">
-  <button id="toggle-transparency" title="Toggle art opacity" style="padding: 6px;">
+  <button id="toggle-transparency" title="Toggle art opacity" style="padding: 6px; font-size: 0px;">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" width="22" height="22" fill="currentColor">
         <path d="M440-440v-80h80v80h-80Zm-80 80v-80h80v80h-80Zm160 0v-80h80v80h-80Zm80-80v-80h80v80h-80Zm-320 0v-80h80v80h-80Zm-80 320q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120H200Zm80-80h80v-80h-80v80Zm160 0h80v-80h-80v80Zm320 0v-80 80Zm-560-80h80v-80h80v80h80v-80h80v80h80v-80h80v80h80v-80h-80v-80h80v-320H200v320h80v80h-80v80Zm0 80v-560 560Zm560-240v80-80ZM600-280v80h80v-80h-80Z"></path>
       </svg>
@@ -676,6 +705,22 @@
       if (isNaN(zoom) || isNaN(lat) || isNaN(lng)) return;
       map.flyTo({ center: [lng, lat], zoom: zoom });
     });
+
+    const zoomIn = () => {
+      const zoom = parseFloat(document.getElementById('coord-zoom').value) + parseFloat(1);
+      const lat = parseFloat(document.getElementById('coord-lat').value);
+      const lng = parseFloat(document.getElementById('coord-lng').value);
+      if (isNaN(zoom) || isNaN(lat) || isNaN(lng)) return;
+      map.flyTo({ center: [lng, lat], zoom: zoom });
+    }
+
+    const zoomOut = () => {
+      const zoom = parseFloat(document.getElementById('coord-zoom').value - 1);
+      const lat = parseFloat(document.getElementById('coord-lat').value);
+      const lng = parseFloat(document.getElementById('coord-lng').value);
+      if (isNaN(zoom) || isNaN(lat) || isNaN(lng)) return;
+      map.flyTo({ center: [lng, lat], zoom: zoom });
+    }
 
     // --- Canvas Overlay Setup ---
     let canvas, overlayToggle;
