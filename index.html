@@ -410,15 +410,19 @@
         fetch(`/tiles/${vDiff}/${z}/${x}/${y}.png`)
       ]);
 
-      if (tile1.status != 200) {
-        throw new Error(`Base tile fetch error: ${tile1.statusText}`);
+      if ((tile1.status != 200) && (tile2.status != 200)) {
+        throw new Error("Both tile fetch error");
       }
-      if (tile2.status != 200) {
+      if ((tile1.status == 200) && (tile2.status != 200)) {
         // Return only the base
         const buffer = await tile1.arrayBuffer();
         return {data: buffer};
       }
-      
+      if ((tile1.status != 200) && (tile2.status == 200)) {
+        // Return only the diff
+        const buffer = await tile2.arrayBuffer();
+        return {data: buffer};
+      }
       const [blob1, blob2] = await Promise.all([
         tile1.blob(),
         tile2.blob()
