@@ -99,7 +99,7 @@
       border: none;
       box-shadow: var(--shadow-sm);
       outline: 2px solid var(--outline-color);
-      transition: background 0.2s, box-shadow 0.2s, outline 0.2s;
+      transition: background 0.2s, box-shadow 0.2s;
       cursor: pointer;
     }
     button:hover {
@@ -708,18 +708,14 @@
 
     const zoomIn = () => {
       const zoom = parseFloat(document.getElementById('coord-zoom').value) + parseFloat(1);
-      const lat = parseFloat(document.getElementById('coord-lat').value);
-      const lng = parseFloat(document.getElementById('coord-lng').value);
-      if (isNaN(zoom) || isNaN(lat) || isNaN(lng)) return;
-      map.flyTo({ center: [lng, lat], zoom: zoom });
+      if (isNaN(zoom)) return;
+      map.zoomTo(zoom);
     }
 
     const zoomOut = () => {
       const zoom = parseFloat(document.getElementById('coord-zoom').value - 1);
-      const lat = parseFloat(document.getElementById('coord-lat').value);
-      const lng = parseFloat(document.getElementById('coord-lng').value);
-      if (isNaN(zoom) || isNaN(lat) || isNaN(lng)) return;
-      map.flyTo({ center: [lng, lat], zoom: zoom });
+      if (isNaN(zoom)) return;
+      map.zoomTo(zoom);
     }
 
     // --- Canvas Overlay Setup ---
