@@ -2,6 +2,7 @@ use std::fs;
 use std::io;
 
 use crate::image;
+use crate::reader_targz::TarGzReader;
 use crate::tilesdb::TileDB;
 
 pub struct Job {
@@ -10,12 +11,6 @@ pub struct Job {
     pub y: i32,
     pub data: Vec<u8>,
     pub crc32: u32,
-}
-
-pub trait Reader {
-    fn read_next_good(&mut self) -> io::Result<Option<Job>>;
-    fn open(&mut self, path: &str) -> io::Result<()>;
-    fn close(&mut self) -> io::Result<()>;
 }
 
 pub struct Metrics {
@@ -185,7 +180,7 @@ impl Ingester {
     }
 
     /// Ingest data from a reader
-    pub fn ingest(&mut self, mut reader: Box<dyn Reader>) -> io::Result<()> {
+    pub fn ingest(&mut self, mut reader: TarGzReader) -> io::Result<()> {
         let metrics = self.metrics.clone();
         
         // Start metrics reporting thread
@@ -195,9 +190,9 @@ impl Ingester {
         });
 
         // Process jobs sequentially
-        loop {
-            match reader.read_next_good()? {
-                Some(job) => {
+        for result in reader.iter() {
+            match result {
+                Ok(job) => {
                     self.metrics.record_read();
                     match self.process_data(job) {
                         Ok(skip) => {
@@ -213,11 +208,12 @@ impl Ingester {
                         }
                     }
                 }
-                None => break,
+                Err(e) => {
+                    eprintln!("Failed to read job: {:?}", e);
+                    self.metrics.record_fail();
+                }
             }
         }
-
-        reader.close()?;
         Ok(())
     }
 }
@@ -244,14 +240,8 @@ pub fn ingest(input: &str, output: &str, base: &str, workers: usize) -> io::Resu
     };
 
     // Choose reader based on input format
-    let reader: Box<dyn Reader> = if input.ends_with(".7z") {
-        return Err(io::Error::new(io::ErrorKind::Other, "7z format not yet implemented"));
-    } else if is_dir(input) {
-        return Err(io::Error::new(io::ErrorKind::Other, "folder format not yet implemented"));
-    } else if input.ends_with(".tar.gz") || input.ends_with(".tgz") {
-        let mut reader = crate::reader_targz::ReaderTarGz::new();
-        reader.open(input)?;
-        Box::new(reader)
+    let reader: TarGzReader = if input.ends_with(".tar.gz") || input.ends_with(".tgz") {
+        TarGzReader::open(input).unwrap()
     } else {
         return Err(io::Error::new(io::ErrorKind::Other, format!("unsupported input format: {}", input)));
     };

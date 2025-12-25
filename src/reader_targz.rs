@@ -1,154 +1,154 @@
-use std::io::{self, Read};
-use std::fs::File;
-use std::cell::RefCell;
-use tar::Archive;
 use flate2::read::GzDecoder;
+use std::fs::File;
+use std::io::{self, Read};
+use std::path::Path;
+use tar::{Archive, Entry, EntryType};
 
-use crate::ingest::{Job, Reader};
+use crate::ingest::Job;
 
-/// Stateful tar.gz reader that maintains decoder and archive state with iterator
-pub struct ReaderTarGz {
-    archive: RefCell<Option<Archive<GzDecoder<std::io::BufReader<File>>>>>,
+#[derive(Debug)]
+pub enum TarGzError {
+    Io(io::Error),
+    UnexpectedPathStructure(String),
+    ParseCoordinate(String),
+    FileTooLarge { path: String, size: u64 },
+    UnknownType { typeflag: u8, path: String },
 }
 
-impl ReaderTarGz {
-    pub fn new() -> Self {
-        ReaderTarGz { 
-            archive: RefCell::new(None),
+impl From<io::Error> for TarGzError {
+    fn from(err: io::Error) -> Self {
+        TarGzError::Io(err)
+    }
+}
+
+pub struct TarGzReader {
+    archive: Archive<GzDecoder<File>>,
+}
+
+impl TarGzReader {
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, TarGzError> {
+        let file = File::open(path)?;
+        let decompressor = GzDecoder::new(file);
+        let archive = Archive::new(decompressor);
+        
+        Ok(TarGzReader { archive })
+    }
+
+    pub fn iter(&mut self) -> TarGzIterator {
+        TarGzIterator {
+            entries: self.archive.entries().ok(),
+        }
+    }
+
+    pub fn good_jobs(&mut self) -> impl Iterator<Item = Job> + '_ {
+        self.iter().filter_map(|result| result.ok())
+    }
+}
+
+pub struct TarGzIterator<'a> {
+    entries: Option<tar::Entries<'a, GzDecoder<File>>>,
+}
+
+fn process_entry(mut entry: Entry<GzDecoder<File>>) -> Result<Option<Job>, TarGzError> {
+    let header = entry.header();
+    let entry_type = header.entry_type();
+
+    match entry_type {
+        EntryType::Directory | EntryType::Symlink => {
+            // Skip and continue to next entry
+            Ok(None)
+        }
+        EntryType::Regular => {
+            let path = entry.path()?.to_string_lossy().to_string();
+            let path_parts: Vec<&str> = path.split('/').collect();
+            let size = path_parts.len();
+
+            if size < 2 {
+                return Err(TarGzError::UnexpectedPathStructure(path));
+            }
+
+            let z = 11;
+            
+            let x = path_parts[size - 2]
+                .parse::<i32>()
+                .map_err(|_| TarGzError::ParseCoordinate(format!("x coordinate from path: {}", path)))?;
+
+            let y_str = path_parts[size - 1]
+                .strip_suffix(".png")
+                .ok_or_else(|| TarGzError::ParseCoordinate(format!("y coordinate from path: {}", path)))?;
+            
+            let y = y_str
+                .parse::<i32>()
+                .map_err(|_| TarGzError::ParseCoordinate(format!("y coordinate from path: {}", path)))?;
+
+            let file_size = header.size()?;
+            if file_size > 10 * 1024 * 1024 {
+                return Err(TarGzError::FileTooLarge {
+                    path,
+                    size: file_size,
+                });
+            }
+
+            let mut data = Vec::with_capacity(file_size as usize);
+            entry.read_to_end(&mut data)?;
+
+            let crc = crc32fast::hash(&data);
+
+            Ok(Some(Job { z, x, y, data, crc32: crc }))
+        }
+        _ => {
+            let path = entry.path()?.to_string_lossy().to_string();
+            Err(TarGzError::UnknownType {
+                typeflag: entry_type.as_byte(),
+                path,
+            })
         }
     }
 }
 
-impl Reader for ReaderTarGz {
-    fn open(&mut self, path: &str) -> io::Result<()> {
-        let file = std::io::BufReader::new(File::open(path)?);
-        let decoder = GzDecoder::new(file);
-        self.archive = RefCell::new(Some(Archive::new(decoder)));
-        Ok(())
-    }
+impl<'a> Iterator for TarGzIterator<'a> {
+    type Item = Result<Job, TarGzError>;
 
-    fn close(&mut self) -> io::Result<()> {
-        self.archive = RefCell::new(None);
-        Ok(())
-    }
+    fn next(&mut self) -> Option<Self::Item> {
+        let entries = self.entries.as_mut()?;
 
-    fn read_next_good(&mut self) -> io::Result<Option<Job>> {
-        println!("read_next_good");
         loop {
-            match self.read_one() {
-                Ok(Some((job, should_continue))) => {
-                    println!("Read job: z={}, x={}, y={}, data_len={}, crc32={:08x}", job.z, job.x, job.y, job.data.len(), job.crc32);
-                    if !should_continue {
-                        // Continue looping to find next valid entry
-                        continue;
+            match entries.next() {
+                Some(Ok(entry)) => {
+                    match process_entry(entry) {
+                        Ok(Some(job)) => return Some(Ok(job)),
+                        Ok(None) => continue, // Skip directories/symlinks
+                        Err(e) => return Some(Err(e)),
                     }
-                    return Ok(Some(job));
                 }
-                Ok(None) => {
-                    // No more entries in archive
-                    println!("No more entries in archive");
-                    return Ok(None);
-                }
-                Err(e) => {
-                    // Log error and continue to next entry
-                    eprintln!("Error reading entry: {}", e);
-                    continue;
-                }
+                Some(Err(e)) => return Some(Err(TarGzError::Io(e))),
+                None => return None,
             }
         }
     }
 }
 
-impl ReaderTarGz {
-    fn read_one(&mut self) -> io::Result<Option<(Job, bool)>> {
-        println!("read_one");
-        let mut archive_ref = self.archive.borrow_mut();
-        let archive = archive_ref.as_mut().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::Other, "archive not opened")
-        })?;
+// Example usage
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        // Iterate through entries, maintaining state
-        if let Ok(mut entries) = archive.entries() {
-            while let Some(entry_result) = entries.next() {
-                let mut entry = entry_result?;
-                let header = entry.header();
-                println!("Processing entry: {:?}", entry.path()?);
-
-                match header.entry_type() {
-                    tar::EntryType::Directory | tar::EntryType::Symlink => {
-                        // Skip directories and symlinks
-                        continue;
-                    }
-                    tar::EntryType::Regular => {
-                        let path = entry.path()?.to_string_lossy().to_string();
-                        let path_parts: Vec<&str> = path.split('/').collect();
-                        let size = path_parts.len();
-
-                        if size < 2 {
-                            return Err(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                format!("unexpected file path structure: {}", path),
-                            ));
-                        }
-
-                        let z = 11;
-                        let x: i32 = path_parts[size - 2].parse().map_err(|_| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                format!("failed to parse x coordinate from path"),
-                            )
-                        })?;
-
-                        let y_str = path_parts[size - 1];
-                        let y_str = if y_str.ends_with(".png") {
-                            &y_str[..y_str.len() - 4]
-                        } else {
-                            y_str
-                        };
-                        let y: i32 = y_str.parse().map_err(|_| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                format!("failed to parse y coordinate from path"),
-                            )
-                        })?;
-
-                        let size_bytes = header.size().map_err(|_| {
-                            io::Error::new(io::ErrorKind::InvalidData, "failed to get file size")
-                        })?;
-
-                        if size_bytes > 10 * 1024 * 1024 {
-                            return Err(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                format!("file {} size too large: {} bytes", path, size_bytes),
-                            ));
-                        }
-
-                        let mut data = Vec::new();
-                        entry.read_to_end(&mut data)?;
-
-                        let crc = crc32fast::hash(&data);
-
-                        return Ok(Some((
-                            Job {
-                                z,
-                                x,
-                                y,
-                                data,
-                                crc32: crc,
-                            },
-                            true,
-                        )));
-                    }
-                    _ => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "unknown entry type",
-                        ));
-                    }
-                }
+    #[test]
+    fn example_usage() {
+        let mut reader = TarGzReader::open("archive.tar.gz").unwrap();
+        
+        // Iterate over all entries (including errors)
+        for result in reader.iter() {
+            match result {
+                Ok(job) => println!("Job: z={}, x={}, y={}, crc32={}", job.z, job.x, job.y, job.crc32),
+                Err(e) => eprintln!("Error: {:?}", e),
             }
         }
 
-        Ok(None)
+        // Or just get the good ones
+        let mut reader = TarGzReader::open("archive.tar.gz").unwrap();
+        for job in reader.good_jobs() {
+            println!("Good job: z={}, x={}, y={}", job.z, job.x, job.y);
+        }
     }
 }
