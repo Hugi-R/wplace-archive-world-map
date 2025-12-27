@@ -87,96 +87,33 @@ impl Metrics {
 }
 
 pub struct Ingester {
-    db: TileDB,
+    db_path: String,
     force: bool,
     metrics: std::sync::Arc<Metrics>,
     workers: usize,
     use_diff: bool,
-    base_db: Option<TileDB>,
+    base_db_path: Option<String>,
 }
 
 impl Ingester {
     /// Create a new ingester
-    pub fn new(db: TileDB, workers: usize, force: bool) -> Self {
+    pub fn new(db_path: String, workers: usize, force: bool) -> Self {
         Ingester {
-            db,
+            db_path,
             force,
             metrics: std::sync::Arc::new(Metrics::new()),
             workers,
             use_diff: false,
-            base_db: None,
+            base_db_path: None,
         }
     }
 
     /// Create a diff-based ingester
-    pub fn new_diff(db: TileDB, workers: usize, force: bool, base_db: TileDB) -> Self {
-        let mut ingester = Ingester::new(db, workers, force);
+    pub fn new_diff(db_path: String, workers: usize, force: bool, base_db_path: String) -> Self {
+        let mut ingester = Ingester::new(db_path, workers, force);
         ingester.use_diff = true;
-        ingester.base_db = Some(base_db);
+        ingester.base_db_path = Some(base_db_path);
         ingester
-    }
-
-    /// Process a single job
-    fn process_data(&mut self, job: Job) -> io::Result<bool> {
-        let (exists, _) = self.db.stat_tile(job.z, job.x, job.y)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-        
-        if (exists || false) && !self.force {
-            return Ok(true); // Skip
-        }
-
-        // If diff is enabled, check CRC to quickly know if there's any change
-        // if self.use_diff {
-        //     if let Some(ref base_db) = self.base_db {
-        //         if let Ok((base_exists, crc32)) = base_db.stat_tile(job.z, job.x, job.y) {
-        //             if base_exists && crc32 == job.crc32 {
-        //                 self.metrics.record_crc_skip();
-        //                 return Ok(true); // Skip, no change on tile
-        //             }
-        //         }
-        //     }
-        // }
-
-        let reader = io::Cursor::new(&job.data);
-        let img_paletted = image::png_to_paletted(reader).map_err(
-            |e| io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("failed to decode tile {}/{}/{}: {}", job.z, job.x, job.y, e),
-            )
-        )?;
-
-        // If diff is enabled, compute the diff
-        // let final_data = if self.use_diff {
-        //     if let Some(ref base_db) = self.base_db {
-        //         if let Ok(base_data) = base_db.get_tile(job.z, job.x, job.y) {
-        //             let (diff, has_changes) = img_mock::diff(&base_data, &img_paletted)?;
-        //             if has_changes {
-        //                 diff
-        //             } else {
-        //                 return Ok(true); // Skip, no changes on the tile
-        //             }
-        //         } else {
-        //             img_paletted
-        //         }
-        //     } else {
-        //         img_paletted
-        //     }
-        // } else {
-        //     img_paletted
-        // };
-
-        let img_compressed = image::paletted_to_compressed_bytes(&img_paletted).map_err(
-            |e| io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("failed to compress tile {}/{}/{}: {}", job.z, job.x, job.y, e),
-            )
-        )?;
-
-        // Store tile
-        self.db.put_tile(job.z, job.x, job.y, &img_compressed, job.crc32)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-        
-        Ok(false)
     }
 
     /// Ingest data from a reader
@@ -189,23 +126,73 @@ impl Ingester {
             metrics_clone.report_metrics();
         });
 
-        // Process jobs sequentially
+        // Create a bounded channel for distributing jobs to workers
+        // Use a buffer size of ~2x workers to allow some queueing but prevent unbounded growth
+        let channel_capacity = (self.workers * 2).max(4);
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Job>(channel_capacity);
+        let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+
+        // Spawn worker threads
+        let mut worker_handles = vec![];
+        for _ in 0..self.workers {
+            let rx = rx.clone();
+            let db_path = self.db_path.clone();
+            let metrics = self.metrics.clone();
+            let force = self.force;
+
+            let handle = std::thread::spawn(move || {
+                // Each worker opens its own database connection
+                let mut db = match TileDB::new(db_path, false) {
+                    Ok(db) => db,
+                    Err(e) => {
+                        eprintln!("Worker failed to open database: {}", e);
+                        return;
+                    }
+                };
+
+                loop {
+                    let job = {
+                        let rx = rx.lock().unwrap();
+                        rx.recv()
+                    };
+
+                    match job {
+                        Ok(job) => {
+                            match Self::process_job(&mut db, job, force) {
+                                Ok(skip) => {
+                                    if skip {
+                                        metrics.record_skip();
+                                    } else {
+                                        metrics.record_success();
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("Failed to process job: {}", e);
+                                    metrics.record_fail();
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            // Channel closed, worker should exit
+                            break;
+                        }
+                    }
+                }
+                db.flush_pending_tiles().unwrap_or(()); // Flush any remaining tiles
+            });
+
+            worker_handles.push(handle);
+        }
+
+        // Send jobs from reader to the channel
+        // The bounded channel will block when full, providing backpressure
         for result in reader.iter() {
             match result {
                 Ok(job) => {
                     self.metrics.record_read();
-                    match self.process_data(job) {
-                        Ok(skip) => {
-                            if skip {
-                                self.metrics.record_skip();
-                            } else {
-                                self.metrics.record_success();
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to process job: {}", e);
-                            self.metrics.record_fail();
-                        }
+                    if tx.send(job).is_err() {
+                        eprintln!("Failed to send job to worker");
+                        self.metrics.record_fail();
                     }
                 }
                 Err(e) => {
@@ -214,7 +201,52 @@ impl Ingester {
                 }
             }
         }
+
+        // Drop the sender to signal workers to exit
+        drop(tx);
+
+        // Wait for all workers to finish
+        for handle in worker_handles {
+            let _ = handle.join();
+        }
+
         Ok(())
+    }
+
+    /// Static method to process a single job (for use by worker threads)
+    fn process_job(db: &mut TileDB, job: Job, force: bool) -> io::Result<bool> {
+        let (exists, _) = db.stat_tile(job.z, job.x, job.y)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        
+        if (exists || false) && !force {
+            return Ok(true); // Skip
+        }
+
+        let reader = io::Cursor::new(&job.data);
+        let img_paletted = image::png_to_paletted(reader).map_err(
+            |e| io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to decode tile {}/{}/{}: {}", job.z, job.x, job.y, e),
+            )
+        )?;
+
+        let img_compressed = image::paletted_to_compressed_bytes(&img_paletted).map_err(
+            |e| io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to compress tile {}/{}/{}: {}", job.z, job.x, job.y, e),
+            )
+        )?;
+
+        // We need to make TileDB mutable for put_tile. Since each worker has its own connection,
+        // we'll use unsafe to cast away the const. This is safe because we're in a worker thread
+        // with exclusive access to this TileDB instance.
+        let db = db as *const TileDB as *mut TileDB;
+        unsafe {
+            (*db).put_tile_delayed(job.z, job.x, job.y, &img_compressed, job.crc32)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        }
+        
+        Ok(false)
     }
 }
 
@@ -228,15 +260,19 @@ pub fn is_dir(path: &str) -> bool {
 
 /// Ingest from input source into output database
 pub fn ingest(input: &str, output: &str, base: &str, workers: usize) -> io::Result<()> {
-    let db = TileDB::new(output, false)
+    // Create the output database once to ensure it's initialized
+    let _db = TileDB::new(output, false)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to create tile database: {}", e)))?;
+    drop(_db); // Close the initial connection
 
     let mut ingester = if !base.is_empty() {
-        let base_db = TileDB::new(base, true)
+        // Verify base database exists
+        let _base_db = TileDB::new(base, true)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to open base tile database: {}", e)))?;
-        Ingester::new_diff(db, workers, false, base_db)
+        drop(_base_db);
+        Ingester::new_diff(output.to_string(), workers, false, base.to_string())
     } else {
-        Ingester::new(db, workers, false)
+        Ingester::new(output.to_string(), workers, false)
     };
 
     // Choose reader based on input format

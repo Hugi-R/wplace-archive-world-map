@@ -209,7 +209,7 @@ fn main() {
             let workers = if args.len() > 5 {
                 args[5].parse::<usize>().unwrap_or(1)
             } else {
-                1
+                10
             };
             if let Err(e) = ingest::ingest(input, output, base, workers) {
                 eprintln!("ingest failed: {}", e);

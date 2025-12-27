@@ -127,28 +127,3 @@ impl<'a> Iterator for TarGzIterator<'a> {
         }
     }
 }
-
-// Example usage
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn example_usage() {
-        let mut reader = TarGzReader::open("archive.tar.gz").unwrap();
-        
-        // Iterate over all entries (including errors)
-        for result in reader.iter() {
-            match result {
-                Ok(job) => println!("Job: z={}, x={}, y={}, crc32={}", job.z, job.x, job.y, job.crc32),
-                Err(e) => eprintln!("Error: {:?}", e),
-            }
-        }
-
-        // Or just get the good ones
-        let mut reader = TarGzReader::open("archive.tar.gz").unwrap();
-        for job in reader.good_jobs() {
-            println!("Good job: z={}, x={}, y={}", job.z, job.x, job.y);
-        }
-    }
-}
