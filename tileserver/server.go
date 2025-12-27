@@ -22,6 +22,12 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+type Asset struct {
+	name string
+	data []byte
+	mime string
+}
+
 type TileServer struct {
 	dataPath            string
 	dbPool              map[string]*sql.DB
@@ -31,6 +37,7 @@ type TileServer struct {
 	latestVersion       string
 	previewImage        []byte
 	faviconData         []byte
+	assets              map[string]*Asset
 }
 
 func NewTileServer(dataPath string) (*TileServer, error) {
@@ -40,6 +47,7 @@ func NewTileServer(dataPath string) (*TileServer, error) {
 		stmts:               make(map[string]*sql.Stmt),
 		versionDescriptions: make(map[string]string),
 		indexHtml:           "",
+		assets:              make(map[string]*Asset),
 	}
 
 	if err := ts.initializeDatabases(); err != nil {
@@ -56,6 +64,9 @@ func NewTileServer(dataPath string) (*TileServer, error) {
 	ts.faviconData, err = ts.MakeFavicon()
 	if err != nil {
 		fmt.Printf("Warning: failed to load favicon: %v\n", err)
+	}
+	if err := ts.LoadAssets(); err != nil {
+		return nil, err
 	}
 	return ts, nil
 }
@@ -340,6 +351,52 @@ func (ts *TileServer) MakeFavicon() ([]byte, error) {
 	return faviconData, nil
 }
 
+// LoadAssets loads static assets from the assets directory
+func (ts *TileServer) LoadAssets() error {
+	assetsFolder := path.Join(ts.dataPath, "assets")
+	files, err := os.ReadDir(assetsFolder)
+	if err != nil {
+		return fmt.Errorf("failed to read assets directory: %w", err)
+	}
+
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		filename := file.Name()
+		data, err := os.ReadFile(path.Join(assetsFolder, filename))
+		if err != nil {
+			return fmt.Errorf("failed to read asset %s: %w", filename, err)
+		}
+		ts.assets[filename] = &Asset{name: filename, data: data, mime: getMimeType(filename)}
+		log.Printf("Loaded asset: %s (%d bytes)", filename, len(data))
+	}
+
+	return nil
+}
+
+func getMimeType(filename string) string {
+	ext := strings.ToLower(path.Ext(filename))
+	switch ext {
+	case ".js":
+		return "application/javascript"
+	case ".css":
+		return "text/css"
+	case ".html":
+		return "text/html"
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".svg":
+		return "image/svg+xml"
+	case ".wasm":
+		return "application/wasm"
+	default:
+		return "application/octet-stream"
+	}
+}
+
 func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -379,6 +436,19 @@ func main() {
 		w.Header().Set("Content-Length", strconv.Itoa(len(tileServer.faviconData)))
 		w.WriteHeader(http.StatusOK)
 		w.Write(tileServer.faviconData)
+	}).Methods("GET")
+
+	// Assets endpoint
+	r.HandleFunc("/assets/{filename}", func(w http.ResponseWriter, r *http.Request) {
+		filename := mux.Vars(r)["filename"]
+		if asset, exists := tileServer.assets[filename]; exists {
+			w.Header().Set("Content-Type", asset.mime)
+			w.Header().Set("Content-Length", strconv.Itoa(len(asset.data)))
+			w.WriteHeader(http.StatusOK)
+			w.Write(asset.data)
+		} else {
+			http.NotFound(w, r)
+		}
 	}).Methods("GET")
 
 	// Add middleware for logging

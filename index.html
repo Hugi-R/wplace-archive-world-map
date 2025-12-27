@@ -265,7 +265,78 @@
   </div>
 
   <script src="https://unpkg.com/maplibre-gl@5.7.1/dist/maplibre-gl.js"></script>
-  <script>
+  <script type="module">
+    class TileWorkerPool {
+      constructor(numWorkers = 4) {
+        this.workers = [];
+        this.taskQueue = [];
+        this.activeTasks = new Map();
+        this.taskIdCounter = 0;
+
+        // Create worker pool
+        for (let i = 0; i < numWorkers; i++) {
+          const worker = new Worker('assets/tile-worker.js');
+          worker.busy = false;
+          worker.onmessage = (e) => this.handleWorkerMessage(worker, e);
+          this.workers.push(worker);
+          worker.postMessage({ type: 'init' });
+        }
+      }
+
+      async decompress(buffer) {
+        return new Promise((resolve, reject) => {
+          const taskId = this.taskIdCounter++;
+          const task = { taskId, buffer, resolve, reject };
+          
+          const availableWorker = this.workers.find(w => !w.busy);
+          if (availableWorker) {
+            this.executeTask(availableWorker, task);
+          } else {
+            this.taskQueue.push(task);
+          }
+        });
+      }
+
+      executeTask(worker, task) {
+        worker.busy = true;
+        this.activeTasks.set(task.taskId, task);
+        worker.postMessage(
+          { type: 'decompress', data: { taskId: task.taskId, buffer: task.buffer } },
+          [task.buffer] // Transfer the buffer for efficiency
+        );
+      }
+
+      handleWorkerMessage(worker, event) {
+        const { type, taskId, arrayBuffer, error } = event.data;
+
+        if (type === 'decompress-result') {
+          const task = this.activeTasks.get(taskId);
+          if (task) {
+            this.activeTasks.delete(taskId);
+            if (error) {
+              task.reject(new Error(error));
+            } else {
+              task.resolve(arrayBuffer);
+            }
+          }
+
+          // Process next queued task if any
+          worker.busy = false;
+          if (this.taskQueue.length > 0) {
+            const nextTask = this.taskQueue.shift();
+            this.executeTask(worker, nextTask);
+          }
+        }
+      }
+
+      terminate() {
+        this.workers.forEach(w => w.terminate());
+      }
+    }
+
+    // Initialize worker pool (adjust number of workers based on your needs)
+    const tileWorkerPool = new TileWorkerPool(4);
+    
     // --- Encart close handler ---
     document.addEventListener('DOMContentLoaded', function() {
       var encartClose = document.getElementById('encart-close');
@@ -387,10 +458,11 @@
         ]);
         if (tile.status == 200) {
           const buffer = await tile.arrayBuffer();
+          const img = await tileWorkerPool.decompress(buffer);
 
           if (cache) {
             // Store in cache
-            const responseForCache = new Response(buffer, {
+            const responseForCache = new Response(img, {
               headers: {
                 'Content-Type': 'image/png',
                 'Cache-Control': 'max-age=604800' // Cache for 7 days
@@ -399,7 +471,7 @@
             await cache.put(cacheKey, responseForCache);
           }
 
-          return {data: buffer};
+          return {data: img};
         }
         throw new Error(`Tile fetch error: ${tile.statusText}`);
       }
