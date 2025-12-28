@@ -12,11 +12,12 @@ crc32fast = "1.3"
 tar = "0.4"
 flate2 = "1.0"
 wasm-bindgen = { version = "0.2", optional = true }
+console_error_panic_hook = { version = "0.1.7", optional = true }
 
 [features]
 default = ["full"]
 sqlite = ["rusqlite"]
-wasm = ["wasm-bindgen"]
+wasm = ["wasm-bindgen", "console_error_panic_hook"]
 # Full build with all features (CLI + library)
 full = ["sqlite", "wasm"]
 

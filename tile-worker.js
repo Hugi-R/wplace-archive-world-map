@@ -7,9 +7,10 @@ self.onmessage = async (event) => {
 
     if (type === 'init') {
         // Load WASM module once
-        const { default: init, compressed_bytes_to_png_blob } =
+        const { default: init, compressed_bytes_to_png_blob, init_panic_hook } =
             await import('./wplace_archive_world_map.js');
         await init();
+        init_panic_hook();
         wasmModule = { compressed_bytes_to_png_blob };
         self.postMessage({ type: 'ready' });
         return;

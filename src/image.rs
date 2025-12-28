@@ -99,28 +99,36 @@ pub fn compressed_bytes_to_paletted(compressed: &[u8]) -> Result<PalettedImage, 
     })
 }
 
+/// Convert a paletted image back to a PNG.
+pub fn paletted_to_png<W: Write>(paletted: &PalettedImage, out: W) -> Result<(), Box<dyn Error>> {
+    {
+        let mut encoder = Encoder::new(out, paletted.width as u32, paletted.height as u32);
+        encoder.set_color(ColorType::Indexed);
+        encoder.set_depth(BitDepth::Eight);
+        encoder.set_compression(png::Compression::Fastest); // Fast or Fastest are good choices
+
+        // Build palette (RGB triples) and tRNS (alpha table)
+        let mut palette_bytes = Vec::with_capacity(256 * 3);
+        let mut trns = Vec::with_capacity(256);
+        for rgba in PALETTE.iter() {
+            palette_bytes.push(rgba[0]);
+            palette_bytes.push(rgba[1]);
+            palette_bytes.push(rgba[2]);
+            trns.push(rgba[3]);
+        }
+        encoder.set_palette(palette_bytes);
+        encoder.set_trns(trns.as_slice());
+
+        let mut writer = encoder.write_header()?;
+        writer.write_image_data(&paletted.indices)?;
+    }
+    Ok(())
+}
+
 /// Convert a paletted image back to a PNG file.
 pub fn paletted_to_png_file(paletted: &PalettedImage, output_path: &Path) -> Result<(), Box<dyn Error>> {
     let mut of = File::create(output_path)?;
-    let mut encoder = Encoder::new(&mut of, paletted.width as u32, paletted.height as u32);
-    encoder.set_color(ColorType::Indexed);
-    encoder.set_depth(BitDepth::Eight);
-
-    // Build palette (RGB triples) and tRNS (alpha table)
-    let mut palette_bytes = Vec::with_capacity(256 * 3);
-    let mut trns = Vec::with_capacity(256);
-    for rgba in PALETTE.iter() {
-        palette_bytes.push(rgba[0]);
-        palette_bytes.push(rgba[1]);
-        palette_bytes.push(rgba[2]);
-        trns.push(rgba[3]);
-    }
-    encoder.set_palette(palette_bytes);
-    // set_trns expects a slice or something that can become a Cow<[u8]>
-    encoder.set_trns(trns.as_slice());
-
-    let mut writer = encoder.write_header()?;
-    writer.write_image_data(&paletted.indices)?;
+    paletted_to_png(paletted,  of)?;
     Ok(())
 }
 
