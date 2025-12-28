@@ -164,7 +164,9 @@ fn cmd_4to1(in1: &Path, in2: &Path, in3: &Path, in4: &Path, out: &Path) -> Resul
     let p3 = image::png_file_to_paletted(in3)?;
     let p4 = image::png_file_to_paletted(in4)?;
 
-    let weights = [100u32; 256];
+    let mut weights = [100u32; 256];
+    weights[0] = 0; // don't care about transparent pixels
+    weights[1] = 50; // reduce importance of black pixels
     let start = Instant::now();
     let res = image::downscale_4to1(&p1, &p2, &p3, &p4, &weights);
     let duration = start.elapsed();

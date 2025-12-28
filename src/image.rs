@@ -162,10 +162,10 @@ pub fn downscale_4to1(p1: &PalettedImage, p2: &PalettedImage, p3: &PalettedImage
     assert!(p1.width == p4.width && p1.height == p4.height);
 
     // Downscale each part by 2x using weighted mode
-    let r1 = downscale_mode_weighted(&p1.indices, p1.width, p1.height, weights, 2);
-    let r2 = downscale_mode_weighted(&p2.indices, p2.width, p2.height, weights, 2);
-    let r3 = downscale_mode_weighted(&p3.indices, p3.width, p3.height, weights, 2);
-    let r4 = downscale_mode_weighted(&p4.indices, p4.width, p4.height, weights, 2);
+    let r1 = downscale_mode_weighted_2x2(&p1.indices, p1.width, p1.height, weights);
+    let r2 = downscale_mode_weighted_2x2(&p2.indices, p2.width, p2.height, weights);
+    let r3 = downscale_mode_weighted_2x2(&p3.indices, p3.width, p3.height, weights);
+    let r4 = downscale_mode_weighted_2x2(&p4.indices, p4.width, p4.height, weights);
 
     // Merge the four results as a 2x2 grid
     let out_w = p1.width;
@@ -262,6 +262,79 @@ pub fn downscale_mode_weighted(
     }
 
     out
+}
+
+pub fn downscale_mode_weighted_2x2(
+    src_idx: &[u8],
+    src_w: usize,
+    src_h: usize,
+    weights: &[u32; 256],
+) -> Vec<u8> {
+    assert!(src_h % 2 == 0);
+    assert!(src_w % 2 == 0);
+    let out_w = src_w / 2;
+    let out_h = src_h / 2;
+
+    let mut out = vec![0u8; out_w * out_h];
+
+    for oy in 0..out_h {
+        let sy0 = oy * 2;
+        let row0_base = sy0 * src_w;
+        let row1_base = (sy0 + 1) * src_w;
+        for ox in 0..out_w {
+            let sx0 = ox * 2;
+
+            let mut scores = [0u32; 4];
+            let colors = [
+                src_idx[row0_base + sx0],
+                src_idx[row0_base + sx0 + 1],
+                src_idx[row1_base + sx0],
+                src_idx[row1_base + sx0 + 1],
+            ];
+
+            scores[0] = weights[colors[0] as usize];
+
+            if colors[1] == colors[0] {
+                scores[0] += weights[colors[1] as usize];
+            } else {
+                scores[1] = weights[colors[1] as usize];
+            }
+
+            if colors[2] == colors[0] {
+                scores[0] += weights[colors[2] as usize];
+            } else if colors[2] == colors[1] {
+                scores[1] += weights[colors[2] as usize];
+            } else {
+                scores[2] = weights[colors[2] as usize];
+            }
+
+             if colors[3] == colors[0] {
+                scores[0] += weights[colors[3] as usize];
+            } else if colors[3] == colors[1] {
+                scores[1] += weights[colors[3] as usize];
+            } else if colors[3] == colors[2] {
+                scores[2] += weights[colors[3] as usize];
+            } else {
+                scores[3] = weights[colors[3] as usize];
+            }
+
+            out[oy * out_w + ox] = colors[argmax(&scores)];
+        }
+    }
+
+    out
+}
+
+fn argmax(a: &[u32]) -> usize {
+    let mut best_idx = 0usize;
+    let mut best_val = a[0];
+    for (i, &v) in a.iter().enumerate().skip(1) {
+        if v > best_val {
+            best_val = v;
+            best_idx = i;
+        }
+    }
+    best_idx
 }
 
 // -- helpers ---------------------------------------------------------------
