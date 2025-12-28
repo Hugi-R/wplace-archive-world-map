@@ -286,7 +286,21 @@
       async decompress(buffer) {
         return new Promise((resolve, reject) => {
           const taskId = this.taskIdCounter++;
-          const task = { taskId, buffer, resolve, reject };
+          const task = { type: 'decompress', taskId, buffers: [buffer], resolve, reject };
+          
+          const availableWorker = this.workers.find(w => !w.busy);
+          if (availableWorker) {
+            this.executeTask(availableWorker, task);
+          } else {
+            this.taskQueue.push(task);
+          }
+        });
+      }
+
+      async downscale_4to1(compressed1, compressed2, compressed3, compressed4) {
+        return new Promise((resolve, reject) => {
+          const taskId = this.taskIdCounter++;
+          const task = { type: 'downscale', taskId, buffers: [compressed1, compressed2, compressed3, compressed4], resolve, reject };
           
           const availableWorker = this.workers.find(w => !w.busy);
           if (availableWorker) {
@@ -301,15 +315,15 @@
         worker.busy = true;
         this.activeTasks.set(task.taskId, task);
         worker.postMessage(
-          { type: 'decompress', data: { taskId: task.taskId, buffer: task.buffer } },
-          [task.buffer] // Transfer the buffer for efficiency
+          { type: task.type, data: { taskId: task.taskId, buffers: task.buffers } },
+          task.buffers // Transfer the buffers for efficiency
         );
       }
 
       handleWorkerMessage(worker, event) {
         const { type, taskId, arrayBuffer, error } = event.data;
 
-        if (type === 'decompress-result') {
+        if (type === 'decompress-result' || type === 'downscale-result') {
           const task = this.activeTasks.get(taskId);
           if (task) {
             this.activeTasks.delete(taskId);
@@ -442,76 +456,63 @@
       const cache = typeof caches !== 'undefined' ? await caches.open("merged-tiles") : null;
       const cacheKey = `tile-${vDiff ? vDiff : vBase}-${z}-${x}-${y}`;
 
-      if (cache) {
-        // Try to get from cache first
-        const cachedResponse = await cache.match(cacheKey);
-        if (cachedResponse) {
-          const buffer = await cachedResponse.arrayBuffer();
-          return {data: buffer};
-        }
-      }
+      // if (cache) {
+      //   // Try to get from cache first
+      //   const cachedResponse = await cache.match(cacheKey);
+      //   if (cachedResponse) {
+      //     const buffer = await cachedResponse.arrayBuffer();
+      //     return {data: buffer};
+      //   }
+      // }
 
       // No diff version, fetch only the base
       if (vDiff == null) {
-        const [tile] = await Promise.all([
-          fetch(`/tiles/${vBase}/${z}/${x}/${y}.png`)
-        ]);
-        if (tile.status == 200) {
-          const buffer = await tile.arrayBuffer();
-          const img = await tileWorkerPool.decompress(buffer);
+        if (z == 11) {
+          const [tile] = await Promise.all([
+            fetch(`/tiles/${vBase}/${z}/${x}/${y}.png`)
+          ]);
+          if (tile.status == 200) {
+            const buffer = await tile.arrayBuffer();
+            const img = await tileWorkerPool.decompress(buffer);
 
-          if (cache) {
-            // Store in cache
-            const responseForCache = new Response(img, {
-              headers: {
-                'Content-Type': 'image/png',
-                'Cache-Control': 'max-age=604800' // Cache for 7 days
-              }
-            });
-            await cache.put(cacheKey, responseForCache);
+            // if (cache) {
+            //   // Store in cache
+            //   const responseForCache = new Response(img, {
+            //     headers: {
+            //       'Content-Type': 'image/png',
+            //       'Cache-Control': 'max-age=604800' // Cache for 7 days
+            //     }
+            //   });
+            //   await cache.put(cacheKey, responseForCache);
+            // }
+
+            return {data: img};
           }
-
+          throw new Error(`Tile fetch error: ${tile.statusText}`);
+        }
+      }
+      if (z == 10) {
+        let z2 = 11;
+        let x2 = x * 2;
+        let y2 = y * 2;
+        const [t1, t2, t3, t4] = await Promise.all([
+            fetch(`/tiles/${vBase}/${z2}/${x2}/${y2}.png`),
+            fetch(`/tiles/${vBase}/${z2}/${x2+1}/${y2}.png`),
+            fetch(`/tiles/${vBase}/${z2}/${x2}/${y2+1}.png`),
+            fetch(`/tiles/${vBase}/${z2}/${x2+1}/${y2+1}.png`)
+          ]);
+        if (t1.status == 200 && t2.status == 200 && t3.status == 200 && t4.status == 200) {
+          console.log(`Merging tiles for ${vBase} z${z} x${x} y${y}`);
+          const [b1, b2, b3, b4] = await Promise.all([
+            t1.arrayBuffer(),
+            t2.arrayBuffer(),
+            t3.arrayBuffer(),
+            t4.arrayBuffer()
+          ]);
+          const img = await tileWorkerPool.downscale_4to1(b1, b2, b3, b4);
           return {data: img};
         }
-        throw new Error(`Tile fetch error: ${tile.statusText}`);
       }
-
-      // Else, fetch tiles from multiple sources
-      const [tile1, tile2] = await Promise.all([
-        fetch(`/tiles/${vBase}/${z}/${x}/${y}.png`),
-        fetch(`/tiles/${vDiff}/${z}/${x}/${y}.png`)
-      ]);
-
-      if (tile1.status != 200) {
-        throw new Error(`Base tile fetch error: ${tile1.statusText}`);
-      }
-      if (tile2.status != 200) {
-        // Return only the base
-        const buffer = await tile1.arrayBuffer();
-        return {data: buffer};
-      }
-      
-      const [blob1, blob2] = await Promise.all([
-        tile1.blob(),
-        tile2.blob()
-      ]);
-      
-      // Merge tiles
-      const merged = await mergeTileBlobs(blob1, blob2);
-      const buffer = await merged.arrayBuffer();
-
-      if (cache) {
-        // Store in cache
-        const responseForCache = new Response(buffer, {
-          headers: {
-            'Content-Type': 'image/png',
-            'Cache-Control': 'max-age=604800' // Cache for 7 days
-          }
-        });
-        await cache.put(cacheKey, responseForCache);
-      }
-
-      return {data: buffer};
     });
 
       // --- URL param helpers: read and update lat/lng/zoom ---
@@ -565,9 +566,9 @@
       return {
       vBase: vBase,
       vDiff: vDiff,
-      z: match[2],
-      x: match[3],
-      y: match[4]
+      z: parseInt(match[2]),
+      x: parseInt(match[3]),
+      y: parseInt(match[4])
       };
     }
 

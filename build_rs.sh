@@ -6,3 +6,4 @@ cargo build --release
 cp pkg/wplace_archive_world_map_bg.wasm tmp/assets/
 cp pkg/wplace_archive_world_map.js tmp/assets/
 cp tile-worker.js tmp/assets/
+cp index.html tmp/index.html.tmpl

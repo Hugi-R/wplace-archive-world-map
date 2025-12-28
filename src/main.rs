@@ -158,6 +158,23 @@ fn cmd_benchmark_resize() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn cmd_4to1(in1: &Path, in2: &Path, in3: &Path, in4: &Path, out: &Path) -> Result<(), Box<dyn Error>> {
+    let p1 = image::png_file_to_paletted(in1)?;
+    let p2 = image::png_file_to_paletted(in2)?;
+    let p3 = image::png_file_to_paletted(in3)?;
+    let p4 = image::png_file_to_paletted(in4)?;
+
+    let weights = [100u32; 256];
+    let start = Instant::now();
+    let res = image::downscale_4to1(&p1, &p2, &p3, &p4, &weights);
+    let duration = start.elapsed();
+    println!("Downscale 4to1 took {:.3} seconds", duration.as_secs_f64());
+
+    image::paletted_to_png_file(&res, out)?;
+
+    Ok(())
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
@@ -214,6 +231,18 @@ fn main() {
             if let Err(e) = ingest::ingest(input, output, base, workers) {
                 eprintln!("ingest failed: {}", e);
                 std::process::exit(7);
+            }
+        }
+        "4to1" => {
+            if args.len() != 7 { usage(&args[0]); std::process::exit(2); }
+            let in1 = PathBuf::from(&args[2]);
+            let in2 = PathBuf::from(&args[3]);
+            let in3 = PathBuf::from(&args[4]);
+            let in4 = PathBuf::from(&args[5]);
+            let out = PathBuf::from(&args[6]);
+            if let Err(e) = cmd_4to1(&in1, &in2, &in3, &in4, &out) {
+                eprintln!("4to1 failed: {}", e);
+                std::process::exit(8);
             }
         }
         _ => {

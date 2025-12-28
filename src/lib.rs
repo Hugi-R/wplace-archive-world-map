@@ -37,3 +37,34 @@ pub fn compressed_bytes_to_png_blob(compressed: &[u8]) -> Result<Vec<u8>, wasm_b
 
     Ok(png_bytes)
 }
+
+#[cfg(feature = "wasm")]
+#[wasm_bindgen]
+pub fn compressed_4to1(
+    compressed1: &[u8],
+    compressed2: &[u8],
+    compressed3: &[u8],
+    compressed4: &[u8],
+) -> Result<Vec<u8>, wasm_bindgen::JsValue> {
+    let p1 = image::compressed_bytes_to_paletted(compressed1)
+        .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to decompress image 1: {}", e)))?;
+    let p2 = image::compressed_bytes_to_paletted(compressed2)
+        .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to decompress image 2: {}", e)))?;
+    let p3 = image::compressed_bytes_to_paletted(compressed3)
+        .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to decompress image 3: {}", e)))?;
+    let p4 = image::compressed_bytes_to_paletted(compressed4)
+        .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to decompress image 4: {}", e)))?;
+
+    let mut weights = [100u32; 256];
+    weights[0] = 0; // don't care about transparent pixels
+    weights[1] = 50; // reduce importance of black pixels
+    let res = image::downscale_4to1(&p1, &p2, &p3, &p4, &weights);
+
+    let mut png_bytes = Vec::new();
+    {
+        image::paletted_to_png(&res, &mut png_bytes)
+            .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to encode PNG: {}", e)))?;
+    }
+
+    Ok(png_bytes)
+}

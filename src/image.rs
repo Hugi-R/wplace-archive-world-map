@@ -156,6 +156,41 @@ pub fn compressed_paletted_to_png(input_path: &Path, output_path: &Path) -> Resu
     paletted_to_png_file(&paletted, output_path)
 }
 
+pub fn downscale_4to1(p1: &PalettedImage, p2: &PalettedImage, p3: &PalettedImage, p4: &PalettedImage, weights: &[u32; 256]) -> PalettedImage {
+    assert!(p1.width == p2.width && p1.height == p2.height);
+    assert!(p1.width == p3.width && p1.height == p3.height);
+    assert!(p1.width == p4.width && p1.height == p4.height);
+
+    // Downscale each part by 2x using weighted mode
+    let r1 = downscale_mode_weighted(&p1.indices, p1.width, p1.height, weights, 2);
+    let r2 = downscale_mode_weighted(&p2.indices, p2.width, p2.height, weights, 2);
+    let r3 = downscale_mode_weighted(&p3.indices, p3.width, p3.height, weights, 2);
+    let r4 = downscale_mode_weighted(&p4.indices, p4.width, p4.height, weights, 2);
+
+    // Merge the four results as a 2x2 grid
+    let out_w = p1.width;
+    let out_h = p1.height;
+    let mut res = PalettedImage {
+        width: out_w,
+        height: out_h,
+        indices: vec![0u8; out_w * out_h],
+    };
+    for oy in 0..(out_h / 2) {
+        let row1 = oy * out_w;
+        let row2 = (oy + out_h / 2) * out_w;
+        let r1_base = oy * (out_w / 2);
+        let r2_base = oy * (out_w / 2);
+        for ox in 0..(out_w / 2) {
+            res.indices[row1 + ox] = r1[r1_base + ox];
+            res.indices[row1 + ox + (out_w / 2)] = r2[r2_base + ox];
+            res.indices[row2 + ox] = r3[r1_base + ox];
+            res.indices[row2 + ox + (out_w / 2)] = r4[r2_base + ox];
+        }
+    }
+
+    res
+}
+
 pub fn downscale_mode_weighted(
     src_idx: &[u8],
     src_w: usize,
