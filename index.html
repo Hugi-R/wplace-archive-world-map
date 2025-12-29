@@ -276,6 +276,7 @@
         // Create worker pool
         for (let i = 0; i < numWorkers; i++) {
           const worker = new Worker('assets/tile-worker.js');
+          worker.ready = false;
           worker.busy = false;
           worker.onmessage = (e) => this.handleWorkerMessage(worker, e);
           this.workers.push(worker);
@@ -288,7 +289,7 @@
           const taskId = this.taskIdCounter++;
           const task = { type: 'decompress', taskId, buffers: [buffer], resolve, reject };
           
-          const availableWorker = this.workers.find(w => !w.busy);
+          const availableWorker = this.workers.find(w => !w.busy && w.ready);
           if (availableWorker) {
             this.executeTask(availableWorker, task);
           } else {
@@ -322,6 +323,15 @@
 
       handleWorkerMessage(worker, event) {
         const { type, taskId, arrayBuffer, error } = event.data;
+
+        if (type === 'ready') {
+          worker.ready = true;
+          // Check if there are queued tasks
+          if (this.taskQueue.length > 0) {
+            const nextTask = this.taskQueue.shift();
+            this.executeTask(worker, nextTask);
+          }
+        }
 
         if (type === 'decompress-result' || type === 'downscale-result') {
           const task = this.activeTasks.get(taskId);

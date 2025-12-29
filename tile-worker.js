@@ -3,7 +3,7 @@ let wasmModule = null;
 // Initialize WASM module when worker starts
 self.onmessage = async (event) => {
     const { type, data } = event.data;
-    console.log(`Worker received message of type: ${type}`);
+    console.log(`Worker received message of type: ${type}. Loaded WASM: ${wasmModule !== null}`);
 
     if (type === 'init') {
         // Load WASM module once
