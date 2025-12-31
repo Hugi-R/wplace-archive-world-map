@@ -14,6 +14,12 @@ pub struct PalettedImage {
     pub indices: Vec<u8>,
 }
 
+impl Clone for PalettedImage {
+    fn clone(&self) -> Self {
+        PalettedImage { width: self.width, height: self.height, indices: self.indices.clone() }
+    }
+}
+
 /// Convert a PNG stream (from BufReader) to a paletted image representation.
 pub fn png_to_paletted<R: BufRead + Seek>(reader: R) -> Result<PalettedImage, Box<dyn Error>> {
     let decoder = Decoder::new(reader);
@@ -196,10 +202,10 @@ pub fn downscale_4to1(p1: &PalettedImage, p2: &PalettedImage, p3: &PalettedImage
     assert!(p1.width == p4.width && p1.height == p4.height);
 
     // Downscale each part by 2x using weighted mode
-    let r1 = downscale_mode_weighted_2x2(&p1.indices, p1.width, p1.height, weights);
-    let r2 = downscale_mode_weighted_2x2(&p2.indices, p2.width, p2.height, weights);
-    let r3 = downscale_mode_weighted_2x2(&p3.indices, p3.width, p3.height, weights);
-    let r4 = downscale_mode_weighted_2x2(&p4.indices, p4.width, p4.height, weights);
+    let r1 = downscale_mode_weighted_2x2(&p1, weights);
+    let r2 = downscale_mode_weighted_2x2(&p2, weights);
+    let r3 = downscale_mode_weighted_2x2(&p3, weights);
+    let r4 = downscale_mode_weighted_2x2(&p4, weights);
 
     merge_2x2(
         &r1, &r2, &r3, &r4
@@ -280,31 +286,29 @@ pub fn downscale_mode_weighted(
 }
 
 pub fn downscale_mode_weighted_2x2(
-    src_idx: &[u8],
-    src_w: usize,
-    src_h: usize,
+    src: &PalettedImage,
     weights: &[u32; 256],
 ) -> PalettedImage {
-    assert!(src_h % 2 == 0);
-    assert!(src_w % 2 == 0);
-    let out_w = src_w / 2;
-    let out_h = src_h / 2;
+    assert!(src.height % 2 == 0);
+    assert!(src.width % 2 == 0);
+    let out_w = src.width / 2;
+    let out_h = src.height / 2;
 
     let mut out = vec![0u8; out_w * out_h];
 
     for oy in 0..out_h {
         let sy0 = oy * 2;
-        let row0_base = sy0 * src_w;
-        let row1_base = (sy0 + 1) * src_w;
+        let row0_base = sy0 * src.width;
+        let row1_base = (sy0 + 1) * src.width;
         for ox in 0..out_w {
             let sx0 = ox * 2;
 
             let mut scores = [0u32; 4];
             let colors = [
-                src_idx[row0_base + sx0],
-                src_idx[row0_base + sx0 + 1],
-                src_idx[row1_base + sx0],
-                src_idx[row1_base + sx0 + 1],
+                src.indices[row0_base + sx0],
+                src.indices[row0_base + sx0 + 1],
+                src.indices[row1_base + sx0],
+                src.indices[row1_base + sx0 + 1],
             ];
 
             scores[0] = weights[colors[0] as usize];

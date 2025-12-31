@@ -13,6 +13,7 @@ tar = "0.4"
 flate2 = "1.0"
 wasm-bindgen = { version = "0.2", optional = true }
 console_error_panic_hook = { version = "0.1.7", optional = true }
+rayon = "1.11.0"
 
 [features]
 default = ["full"]

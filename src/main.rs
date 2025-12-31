@@ -9,6 +9,7 @@ mod palette;
 mod tilesdb;
 mod ingest;
 mod reader_targz;
+mod merge;
 
 fn usage(program: &str) {
     eprintln!("Usage: {} <command> [args]", program);
@@ -177,6 +178,10 @@ fn cmd_4to1(in1: &Path, in2: &Path, in3: &Path, in4: &Path, out: &Path) -> Resul
     Ok(())
 }
 
+fn cmd_merge(input: &str, base: &str, workers: usize) -> Result<(), Box<dyn Error>> {
+    merge::merge(input, base, workers)
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
@@ -245,6 +250,20 @@ fn main() {
             if let Err(e) = cmd_4to1(&in1, &in2, &in3, &in4, &out) {
                 eprintln!("4to1 failed: {}", e);
                 std::process::exit(8);
+            }
+        }
+        "merge" => {
+            if args.len() < 4 { usage(&args[0]); std::process::exit(2); }
+            let input = &args[2];
+            let base = &args[3];
+            let workers = if args.len() > 4 {
+                args[4].parse::<usize>().unwrap_or(1)
+            } else {
+                10
+            };
+            if let Err(e) = cmd_merge(input, base, workers) {
+                eprintln!("merge failed: {}", e);
+                std::process::exit(9);
             }
         }
         _ => {
