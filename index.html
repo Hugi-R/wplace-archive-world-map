@@ -475,33 +475,8 @@
       //   }
       // }
 
-      // No diff version, fetch only the base
-      if (vDiff == null) {
-        if (z == 11) {
-          const [tile] = await Promise.all([
-            fetch(`/tiles/${vBase}/${z}/${x}/${y}.png`)
-          ]);
-          if (tile.status == 200) {
-            const buffer = await tile.arrayBuffer();
-            const img = await tileWorkerPool.decompress(buffer);
-
-            // if (cache) {
-            //   // Store in cache
-            //   const responseForCache = new Response(img, {
-            //     headers: {
-            //       'Content-Type': 'image/png',
-            //       'Cache-Control': 'max-age=604800' // Cache for 7 days
-            //     }
-            //   });
-            //   await cache.put(cacheKey, responseForCache);
-            // }
-
-            return {data: img};
-          }
-          throw new Error(`Tile fetch error: ${tile.statusText}`);
-        }
-      }
       if (z == 10) {
+        // Compte z=10 on client (not stored on server)
         let z2 = 11;
         let x2 = x * 2;
         let y2 = y * 2;
@@ -522,6 +497,29 @@
           const img = await tileWorkerPool.downscale_4to1(b1, b2, b3, b4);
           return {data: img};
         }
+      } else {
+        // Direct fetch for other zoom levels
+        const [tile] = await Promise.all([
+          fetch(`/tiles/${vBase}/${z}/${x}/${y}.png`)
+        ]);
+        if (tile.status == 200) {
+          const buffer = await tile.arrayBuffer();
+          const img = await tileWorkerPool.decompress(buffer);
+
+          // if (cache) {
+          //   // Store in cache
+          //   const responseForCache = new Response(img, {
+          //     headers: {
+          //       'Content-Type': 'image/png',
+          //       'Cache-Control': 'max-age=604800' // Cache for 7 days
+          //     }
+          //   });
+          //   await cache.put(cacheKey, responseForCache);
+          // }
+
+          return {data: img};
+        }
+        throw new Error(`Tile fetch error: ${tile.statusText}`);
       }
     });
 
