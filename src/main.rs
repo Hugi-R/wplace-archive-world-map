@@ -179,7 +179,29 @@ fn cmd_4to1(in1: &Path, in2: &Path, in3: &Path, in4: &Path, out: &Path) -> Resul
 }
 
 fn cmd_merge(input: &str, base: &str, workers: usize) -> Result<(), Box<dyn Error>> {
-    merge::merge(input, base, workers)
+    if base == "" {
+        merge::merge(input, workers)
+    } else {
+        merge::merge_diff(input, base, workers)
+    }
+}
+
+fn cmd_diff(base: &str, new: &str, out: &str) -> Result<(), Box<dyn Error>> {
+    let base_img = image::png_file_to_paletted(&Path::new(base))?;
+    let new_img = image::png_file_to_paletted(&Path::new(new))?;
+    let (_, diff) = image::diff_paletted(&base_img, &new_img);
+    image::paletted_to_png_file(&diff, Path::new(out))?;
+
+    Ok(())
+}
+
+fn cmd_undiff(base: &str, diff: &str, out: &str) -> Result<(), Box<dyn Error>> {
+    let base_img = image::png_file_to_paletted(&Path::new(base))?;
+    let diff_img = image::png_file_to_paletted(&Path::new(diff))?;
+    let undiff = image::apply_diff_paletted(&base_img, &diff_img);
+    image::paletted_to_png_file(&undiff, Path::new(out))?;
+
+    Ok(())
 }
 
 fn main() {
@@ -253,9 +275,9 @@ fn main() {
             }
         }
         "merge" => {
-            if args.len() < 4 { usage(&args[0]); std::process::exit(2); }
+            if args.len() < 2 { usage(&args[0]); std::process::exit(2); }
             let input = &args[2];
-            let base = &args[3];
+            let base = if args.len() > 3 { args[3].as_str() } else { "" };
             let workers = if args.len() > 4 {
                 args[4].parse::<usize>().unwrap_or(1)
             } else {
@@ -264,6 +286,26 @@ fn main() {
             if let Err(e) = cmd_merge(input, base, workers) {
                 eprintln!("merge failed: {}", e);
                 std::process::exit(9);
+            }
+        }
+        "diff" => {
+            if args.len() < 3 { usage(&args[0]); std::process::exit(2); }
+            let base = &args[2];
+            let new= &args[3];
+            let out = &args[4];
+            if let Err(e) = cmd_diff(base, new, out) {
+                eprintln!("diff failed: {}", e);
+                std::process::exit(10);
+            }
+        }
+        "undiff" => {
+            if args.len() < 3 { usage(&args[0]); std::process::exit(2); }
+            let base = &args[2];
+            let diff= &args[3];
+            let out = &args[4];
+            if let Err(e) = cmd_undiff(base, diff, out) {
+                eprintln!("undiff failed: {}", e);
+                std::process::exit(10);
             }
         }
         _ => {

@@ -272,6 +272,12 @@
         <p>Report bugs on <a href="https://github.com/Hugi-R/wplace-archive-world-map" target="_blank" rel="noopener noreferrer">GitHub</a> or to <a href="https://www.reddit.com/user/EralyonDotnet/" target="_blank" rel="noopener noreferrer">u/EralyonDotnet</a>.</p>
       </div>
     </div>
+    <div id="stats">
+      <p>Downscale: <span id="downscale-stats">NA</span></p>
+      <p>Decompress: <span id="decompress-stats">NA</span></p>
+      <p>Decompress Network: <span id="decompress-network-stats">NA</span></p>
+      <p>Decompress Process: <span id="decompress-process-stats">NA</span></p>
+    </div>
   </div>
     <div class="zoom-button-container">
       <button class="zoom-button" title="Zoom In" onclick="zoomIn()">
@@ -295,6 +301,43 @@
 
   <script src="https://unpkg.com/maplibre-gl@5.7.1/dist/maplibre-gl.js"></script>
   <script type="module">
+    var metricsDownscale = [];
+    var metricsDecompress = [];
+    var metricsDecompressNetwork = [];
+    var metricsDecompressProcess = [];
+    // Every second, log P10, P50, P90 of metrics
+    setInterval(() => {
+      function computePercentiles(data) {
+        if (data.length === 0) return null;
+        data.sort((a, b) => a - b);
+        const p10 = data[Math.floor(0.1 * data.length)];
+        const p50 = data[Math.floor(0.5 * data.length)];
+        const p90 = data[Math.floor(0.9 * data.length)];
+        return { p10, p50, p90 };
+      }
+      const downscalePercentiles = computePercentiles(metricsDownscale);
+      const decompressPercentiles = computePercentiles(metricsDecompress);
+      const decompressProcessPercentiles = computePercentiles(metricsDecompressProcess);
+      const decompressNetworkPercentiles = computePercentiles(metricsDecompressNetwork);
+      if (downscalePercentiles) {
+        document.getElementById("downscale-stats").textContent = `P10=${downscalePercentiles.p10.toFixed(2)}, P50=${downscalePercentiles.p50.toFixed(2)}, P90=${downscalePercentiles.p90.toFixed(2)}`;
+        console.log(`Downscale times (ms): P10=${downscalePercentiles.p10.toFixed(2)}, P50=${downscalePercentiles.p50.toFixed(2)}, P90=${downscalePercentiles.p90.toFixed(2)}`);
+      }
+      if (decompressPercentiles) {
+        document.getElementById("decompress-stats").textContent = `P10=${decompressPercentiles.p10.toFixed(2)}, P50=${decompressPercentiles.p50.toFixed(2)}, P90=${decompressPercentiles.p90.toFixed(2)}`;
+        console.log(`Decompress times (ms): P10=${decompressPercentiles.p10.toFixed(2)}, P50=${decompressPercentiles.p50.toFixed(2)}, P90=${decompressPercentiles.p90.toFixed(2)}`);
+      }
+      if (decompressProcessPercentiles) {
+        document.getElementById("decompress-process-stats").textContent = `P10=${decompressProcessPercentiles.p10.toFixed(2)}, P50=${decompressProcessPercentiles.p50.toFixed(2)}, P90=${decompressProcessPercentiles.p90.toFixed(2)}`;
+        console.log(`Decompress times (ms): P10=${decompressProcessPercentiles.p10.toFixed(2)}, P50=${decompressProcessPercentiles.p50.toFixed(2)}, P90=${decompressProcessPercentiles.p90.toFixed(2)}`);
+      }
+      if (decompressNetworkPercentiles) {
+        document.getElementById("decompress-network-stats").textContent = `P10=${decompressNetworkPercentiles.p10.toFixed(2)}, P50=${decompressNetworkPercentiles.p50.toFixed(2)}, P90=${decompressNetworkPercentiles.p90.toFixed(2)}`;
+        console.log(`Decompress times (ms): P10=${decompressNetworkPercentiles.p10.toFixed(2)}, P50=${decompressNetworkPercentiles.p50.toFixed(2)}, P90=${decompressNetworkPercentiles.p90.toFixed(2)}`);
+      }
+    }, 1000);
+
+
     class TileWorkerPool {
       constructor(numWorkers = 4) {
         this.workers = [];
@@ -327,10 +370,38 @@
         });
       }
 
+      async diff_decompress(baseBuffer, diffBuffer) {
+        return new Promise((resolve, reject) => {
+          const taskId = this.taskIdCounter++;
+          const task = { type: 'decompress-diff', taskId, buffers: [baseBuffer, diffBuffer], resolve, reject };
+          
+          const availableWorker = this.workers.find(w => !w.busy && w.ready);
+          if (availableWorker) {
+            this.executeTask(availableWorker, task);
+          } else {
+            this.taskQueue.push(task);
+          }
+        });
+      }
+
       async downscale_4to1(compressed1, compressed2, compressed3, compressed4) {
         return new Promise((resolve, reject) => {
           const taskId = this.taskIdCounter++;
           const task = { type: 'downscale', taskId, buffers: [compressed1, compressed2, compressed3, compressed4], resolve, reject };
+          
+          const availableWorker = this.workers.find(w => !w.busy);
+          if (availableWorker) {
+            this.executeTask(availableWorker, task);
+          } else {
+            this.taskQueue.push(task);
+          }
+        });
+      }
+
+      async diff_downscale_4to1(baseCompressed1, baseCompressed2, baseCompressed3, baseCompressed4, diffCompressed1, diffCompressed2, diffCompressed3, diffCompressed4) {
+        return new Promise((resolve, reject) => {
+          const taskId = this.taskIdCounter++;
+          const task = { type: 'downscale-diff', taskId, buffers: [baseCompressed1, baseCompressed2, baseCompressed3, baseCompressed4, diffCompressed1, diffCompressed2, diffCompressed3, diffCompressed4], resolve, reject };
           
           const availableWorker = this.workers.find(w => !w.busy);
           if (availableWorker) {
@@ -363,6 +434,7 @@
         }
 
         if (type === 'decompress-result' || type === 'downscale-result') {
+          console.log("Got result", taskId, arrayBuffer);
           const task = this.activeTasks.get(taskId);
           if (task) {
             this.activeTasks.delete(taskId);
@@ -488,6 +560,138 @@
       };
     }
 
+    async function emptyArrayOnError(resp) {
+      if (resp.status == 200) {
+        return await resp.arrayBuffer();
+      }
+      return new ArrayBuffer(0)      
+    }
+
+    async function getTilez10(vBase, z, x, y) {
+      const perfStart = performance.now();
+
+      // Compte z=10 on client (not stored on server)
+      let z2 = 11;
+      let x2 = x * 2;
+      let y2 = y * 2;
+      const [t1, t2, t3, t4] = await Promise.all([
+        fetch(`/tiles/${vBase}/${z2}/${x2}/${y2}.png`),
+        fetch(`/tiles/${vBase}/${z2}/${x2+1}/${y2}.png`),
+        fetch(`/tiles/${vBase}/${z2}/${x2}/${y2+1}.png`),
+        fetch(`/tiles/${vBase}/${z2}/${x2+1}/${y2+1}.png`)
+      ]);
+      if (t1.status !== 200 && t2.status !== 200 && t3.status !== 200 && t4.status !== 200) {
+        throw new Error("empty tile");
+      }
+      console.log(`Merging tiles for ${vBase} z${z} x${x} y${y}`);
+      const [b1, b2, b3, b4] = await Promise.all([
+        emptyArrayOnError(t1),
+        emptyArrayOnError(t2),
+        emptyArrayOnError(t3),
+        emptyArrayOnError(t4),
+      ]);
+      const img = await tileWorkerPool.downscale_4to1(b1, b2, b3, b4);
+      
+      const perfEnd = performance.now();
+      console.log(`z${z} x${x} y${y} took ${(perfEnd - perfStart).toFixed(2)} ms`);
+      metricsDownscale.push(perfEnd - perfStart);
+
+      return img
+    }
+
+    async function getTilez10Diff(vBase, vDiff, z, x, y) {
+      const perfStart = performance.now();
+
+      // Compte z=10 on client (not stored on server)
+      let z2 = 11;
+      let x2 = x * 2;
+      let y2 = y * 2;
+      const [b1, b2, b3, b4, d1, d2, d3, d4] = await Promise.all([
+        fetch(`/tiles/${vBase}/${z2}/${x2}/${y2}.png`),
+        fetch(`/tiles/${vBase}/${z2}/${x2+1}/${y2}.png`),
+        fetch(`/tiles/${vBase}/${z2}/${x2}/${y2+1}.png`),
+        fetch(`/tiles/${vBase}/${z2}/${x2+1}/${y2+1}.png`),
+        fetch(`/tiles/${vDiff}/${z2}/${x2}/${y2}.png`),
+        fetch(`/tiles/${vDiff}/${z2}/${x2+1}/${y2}.png`),
+        fetch(`/tiles/${vDiff}/${z2}/${x2}/${y2+1}.png`),
+        fetch(`/tiles/${vDiff}/${z2}/${x2+1}/${y2+1}.png`)
+      ]);
+      if ( b1.status !== 200 && b2.status !== 200 && b3.status !== 200 && b4.status !== 200 && d1.status !== 200 && d2.status !== 200 && d3.status !== 200 && d4.status !== 200) {
+        throw new Error("empty tile");
+      }
+      console.log(`Merging tiles for ${vBase} z${z} x${x} y${y}`);
+      const [bb1, bb2, bb3, bb4, bd1, bd2, bd3, bd4] = await Promise.all([
+        emptyArrayOnError(b1),
+        emptyArrayOnError(b2),
+        emptyArrayOnError(b3),
+        emptyArrayOnError(b4),
+        emptyArrayOnError(d1),
+        emptyArrayOnError(d2),
+        emptyArrayOnError(d3),
+        emptyArrayOnError(d4),
+      ]);
+      const img = await tileWorkerPool.diff_downscale_4to1(bb1, bb2, bb3, bb4, bd1, bd2, bd3, bd4);
+      
+      const perfEnd = performance.now();
+      console.log(`z${z} x${x} y${y} took ${(perfEnd - perfStart).toFixed(2)} ms`);
+      metricsDownscale.push(perfEnd - perfStart);
+
+      return img;
+    }
+
+    async function getTile(vBase, z, x, y) {
+      const perfStart = performance.now();
+
+      const [tile] = await Promise.all([
+        fetch(`/tiles/${vBase}/${z}/${x}/${y}.png`)
+      ]);
+      if (tile.status !== 200) {
+        throw new Error("empty tile");
+      }
+      const buffer = await tile.arrayBuffer();
+
+      const perfNetworkEnd = performance.now();
+      metricsDecompressNetwork.push(perfNetworkEnd - perfStart);
+
+      const img = await tileWorkerPool.decompress(buffer);
+      console.log("BBB", img)
+
+      const perfEnd = performance.now();
+      console.log(`z${z} x${x} y${y} took ${(perfEnd - perfNetworkEnd).toFixed(2)} ms`);
+      metricsDecompressProcess.push(perfEnd - perfNetworkEnd);
+      metricsDecompress.push(perfEnd - perfStart);
+
+      return img
+    }
+
+    async function getTileDiff(vBase, vDiff, z, x, y) {
+      const perfStart = performance.now();
+
+      const [base, diff] = await Promise.all([
+        fetch(`/tiles/${vBase}/${z}/${x}/${y}.png`),
+        fetch(`/tiles/${vDiff}/${z}/${x}/${y}.png`)
+      ]);
+      if (base.status !== 200 && diff.status !== 200) {
+        throw new Error("empty tile");
+      }
+      const [baseBuffer, diffBuffer] = await Promise.all([
+        emptyArrayOnError(base),
+        emptyArrayOnError(diff),
+      ]);
+
+      const perfNetworkEnd = performance.now();
+      metricsDecompressNetwork.push(perfNetworkEnd - perfStart);
+
+      const img = await tileWorkerPool.diff_decompress(baseBuffer, diffBuffer);
+
+      const perfEnd = performance.now();
+      console.log(`z${z} x${x} y${y} took ${(perfEnd - perfNetworkEnd).toFixed(2)} ms`);
+      metricsDecompressProcess.push(perfEnd - perfNetworkEnd);
+      metricsDecompress.push(perfEnd - perfStart);
+
+      return img
+    }
+
     // Register custom protocol
     maplibregl.addProtocol('merged', async (params, abortControler) => {
       const { vBase, vDiff, z, x, y } = parseTileUrl(params.url);
@@ -505,50 +709,22 @@
       // }
 
       if (z == 10) {
-        // Compte z=10 on client (not stored on server)
-        let z2 = 11;
-        let x2 = x * 2;
-        let y2 = y * 2;
-        const [t1, t2, t3, t4] = await Promise.all([
-            fetch(`/tiles/${vBase}/${z2}/${x2}/${y2}.png`),
-            fetch(`/tiles/${vBase}/${z2}/${x2+1}/${y2}.png`),
-            fetch(`/tiles/${vBase}/${z2}/${x2}/${y2+1}.png`),
-            fetch(`/tiles/${vBase}/${z2}/${x2+1}/${y2+1}.png`)
-          ]);
-        if (t1.status == 200 && t2.status == 200 && t3.status == 200 && t4.status == 200) {
-          console.log(`Merging tiles for ${vBase} z${z} x${x} y${y}`);
-          const [b1, b2, b3, b4] = await Promise.all([
-            t1.arrayBuffer(),
-            t2.arrayBuffer(),
-            t3.arrayBuffer(),
-            t4.arrayBuffer()
-          ]);
-          const img = await tileWorkerPool.downscale_4to1(b1, b2, b3, b4);
+        if (vDiff) {
+          const img = await getTilez10Diff(vBase, vDiff, z, x, y);
+          return {data: img};
+        } else {
+          const img = await getTilez10(vBase, z, x, y);
           return {data: img};
         }
       } else {
         // Direct fetch for other zoom levels
-        const [tile] = await Promise.all([
-          fetch(`/tiles/${vBase}/${z}/${x}/${y}.png`)
-        ]);
-        if (tile.status == 200) {
-          const buffer = await tile.arrayBuffer();
-          const img = await tileWorkerPool.decompress(buffer);
-
-          // if (cache) {
-          //   // Store in cache
-          //   const responseForCache = new Response(img, {
-          //     headers: {
-          //       'Content-Type': 'image/png',
-          //       'Cache-Control': 'max-age=604800' // Cache for 7 days
-          //     }
-          //   });
-          //   await cache.put(cacheKey, responseForCache);
-          // }
-
+        if (vDiff) {
+          const img = await getTileDiff(vBase, vDiff, z, x, y);
+          return {data: img};
+        } else {
+          const img = await getTile(vBase, z, x, y);
           return {data: img};
         }
-        throw new Error(`Tile fetch error: ${tile.statusText}`);
       }
     });
 
