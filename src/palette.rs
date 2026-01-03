@@ -1,15 +1,23 @@
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 
+pub const PALETTE_SIZE: usize = 256;
+pub const TRANSPARENT: u8 = 0u8;
+pub const DEBUG_COLOR: u8 = 255u8;
+pub const DIFF_COLOR: u8 = 254u8;
+
 /// Palette: index -> RGBA (r,g,b,a)
-pub static PALETTE: Lazy<[[u8; 4]; 256]> = Lazy::new(|| {
-    let mut a = [[255u8, 0, 255, 255]; 256];
+pub static PALETTE: Lazy<[[u8; 4]; PALETTE_SIZE]> = Lazy::new(|| {
+    let mut a = [[255u8, 0, 255, 255]; PALETTE_SIZE];
 
     // reserve 0 for transparent
-    a[0] = [0, 0, 0, 0]; // Transparent
+    a[TRANSPARENT as usize] = [0, 0, 0, 0]; // Transparent
 
     // default debug color at 255 (magenta)
-    a[255] = [255, 0, 255, 255]; // Debug (unknown)
+    a[DEBUG_COLOR as usize] = [255, 0, 255, 255]; // Debug (unknown)
+
+    // reserved 254 for diff color
+    a[DIFF_COLOR as usize] = [255, 1, 255, 255]; // Diff (reserved)
 
     macro_rules! set {
         ($idx:expr, $r:expr, $g:expr, $b:expr) => {
@@ -87,7 +95,7 @@ pub static PALETTE: Lazy<[[u8; 4]; 256]> = Lazy::new(|| {
 
 /// Inverse lookup: RGBA -> index (u8). Unknown RGBA -> 255 (debug).
 pub static PALETTE_INV: Lazy<HashMap<[u8; 4], u8>> = Lazy::new(|| {
-    let mut m = HashMap::with_capacity(256);
+    let mut m = HashMap::with_capacity(PALETTE_SIZE);
     for (i, rgba) in PALETTE.iter().enumerate() {
         m.insert(*rgba, i as u8);
     }

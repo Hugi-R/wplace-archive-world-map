@@ -14,6 +14,7 @@ pub struct Job {
 }
 
 pub struct Metrics {
+    start_time: std::time::Instant,
     read: std::sync::atomic::AtomicU64,
     last_read: std::sync::atomic::AtomicU64,
     done: std::sync::atomic::AtomicU64,
@@ -27,6 +28,7 @@ pub struct Metrics {
 impl Metrics {
     fn new() -> Self {
         Metrics {
+            start_time: std::time::Instant::now(),
             read: std::sync::atomic::AtomicU64::new(0),
             last_read: std::sync::atomic::AtomicU64::new(0),
             done: std::sync::atomic::AtomicU64::new(0),
@@ -61,6 +63,20 @@ impl Metrics {
         self.crcskip.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
+    fn print_metrics(&self) {
+        let done = self.done.load(std::sync::atomic::Ordering::SeqCst);
+        let success = self.success.load(std::sync::atomic::Ordering::SeqCst);
+        let skip = self.skip.load(std::sync::atomic::Ordering::SeqCst);
+        let fail = self.fail.load(std::sync::atomic::Ordering::SeqCst);
+        
+        let elapsed = self.start_time.elapsed().as_secs_f64();
+
+        eprintln!(
+            "Done: {}, Success: {}, Skip: {}, Fail: {}. Elapsed: {:.1}s",
+            done, success, skip, fail, elapsed
+        );
+    }
+
     fn report_metrics(&self) {
         const TICK_RATE: f64 = 5.0;
         loop {
@@ -78,9 +94,11 @@ impl Metrics {
             let rate = (done - last_done) as f64 / TICK_RATE;
             let crcskip = self.crcskip.load(std::sync::atomic::Ordering::SeqCst);
             
+            let elapsed = self.start_time.elapsed().as_secs_f64();
+
             eprintln!(
-                "Rate: {:.2}/s, Done: {}, Success: {}, Skip: {}, Fail: {}. Read rate: {:.2}, Read: {}, CrcSkip: {}",
-                rate, done, success, skip, fail, read_rate, read, crcskip
+                "Rate: {:.2}/s, Done: {}, Success: {}, Skip: {}, Fail: {}. Read rate: {:.2}, Read: {}, CrcSkip: {}.  Elapsed: {:.1}s",
+                rate, done, success, skip, fail, read_rate, read, crcskip, elapsed
             );
         }
     }
@@ -138,7 +156,8 @@ impl Ingester {
             let rx = rx.clone();
             let db_path = self.db_path.clone();
             let metrics = self.metrics.clone();
-            let force = self.force;
+            let force = self.force.clone();
+            let base_db_path = self.base_db_path.clone();
 
             let handle = std::thread::spawn(move || {
                 // Each worker opens its own database connection
@@ -149,6 +168,17 @@ impl Ingester {
                         return;
                     }
                 };
+                let mut base_db: Option<TileDB> = if base_db_path.is_some() {
+                    match TileDB::new(base_db_path.as_ref().unwrap().clone(), true) {
+                        Ok(bdb) => Some(bdb),
+                        Err(e) => {
+                            eprintln!("Worker failed to open base database for diffing: {}", e);
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
 
                 loop {
                     let job = {
@@ -158,17 +188,34 @@ impl Ingester {
 
                     match job {
                         Ok(job) => {
-                            match Self::process_job(&mut db, job, force) {
-                                Ok(skip) => {
-                                    if skip {
-                                        metrics.record_skip();
-                                    } else {
-                                        metrics.record_success();
+                            if base_db.is_some() {
+                                let base_db = base_db.as_mut().unwrap();
+                                match Self::process_job_diff(&mut db, base_db,  job, force) {
+                                    Ok(skip) => {
+                                        if skip {
+                                            metrics.record_skip();
+                                        } else {
+                                            metrics.record_success();
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Failed to process job: {}", e);
+                                        metrics.record_fail();
                                     }
                                 }
-                                Err(e) => {
-                                    eprintln!("Failed to process job: {}", e);
-                                    metrics.record_fail();
+                            } else {
+                                match Self::process_job(&mut db, job, force) {
+                                    Ok(skip) => {
+                                        if skip {
+                                            metrics.record_skip();
+                                        } else {
+                                            metrics.record_success();
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Failed to process job: {}", e);
+                                        metrics.record_fail();
+                                    }
                                 }
                             }
                         }
@@ -210,6 +257,8 @@ impl Ingester {
             let _ = handle.join();
         }
 
+        metrics.print_metrics();
+
         Ok(())
     }
 
@@ -237,14 +286,55 @@ impl Ingester {
             )
         )?;
 
-        // We need to make TileDB mutable for put_tile. Since each worker has its own connection,
-        // we'll use unsafe to cast away the const. This is safe because we're in a worker thread
-        // with exclusive access to this TileDB instance.
-        let db = db as *const TileDB as *mut TileDB;
-        unsafe {
-            (*db).put_tile_delayed(job.z, job.x, job.y, &img_compressed, job.crc32)
+        db.put_tile_delayed(job.z, job.x, job.y, &img_compressed, job.crc32)
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        
+        Ok(false)
+    }
+
+    fn process_job_diff(db: &mut TileDB, base_db: &mut TileDB, job: Job, force: bool) -> io::Result<bool> {
+        let (exists, _) = db.stat_tile(job.z, job.x, job.y)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        
+        if (exists || false) && !force {
+            return Ok(true); // Skip
         }
+
+        let (base_exists, base_crc) = base_db.stat_tile(job.z, job.x, job.y)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        if base_exists && base_crc == job.crc32 {
+            return Ok(true); // Skip due to matching base tile
+        }
+
+        let reader = io::Cursor::new(&job.data);
+        let img_paletted = image::png_to_paletted(reader).map_err(
+            |e| io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to decode tile {}/{}/{}: {}", job.z, job.x, job.y, e),
+            )
+        )?;
+
+        let (has_changed, img_final) = match base_db.get_tile(job.z, job.x, job.y) {
+            Err(_) => (true, img_paletted),
+            Ok(data) => {
+                let img_base = image::compressed_bytes_to_paletted(&data)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                image::diff_paletted(&img_base, &img_paletted)
+            }
+        };
+        if !has_changed {
+            return Ok(true); // Unlikely situation where the tile is unchanged, despite the crc check.
+        }
+
+        let img_compressed = image::paletted_to_compressed_bytes(&img_final).map_err(
+            |e| io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to compress tile {}/{}/{}: {}", job.z, job.x, job.y, e),
+            )
+        )?;
+
+        db.put_tile_delayed(job.z, job.x, job.y, &img_compressed, job.crc32)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
         
         Ok(false)
     }

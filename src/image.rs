@@ -360,6 +360,55 @@ fn argmax(a: &[u32]) -> usize {
     best_idx
 }
 
+/// Create a diff paletted image: pixels that are the same in `base` and `new` are set to DIFF_COLOR,
+/// pixels that differ are taken from `new`.
+/// This allows to store only the differences between two images.
+/// Significant compression can be achieved if the images are similar.
+pub fn diff_paletted(base: &PalettedImage, new: &PalettedImage) -> (bool, PalettedImage) {
+    assert!(base.width == new.width && base.height == new.height);
+
+    let mut out = PalettedImage {
+        width: base.width,
+        height: base.height,
+        indices: vec![0u8; base.width * base.height],
+    };
+
+    let mut any_diff = false;
+    for i in 0..(base.width * base.height) {
+        if base.indices[i] == new.indices[i] {
+            out.indices[i] = crate::palette::DIFF_COLOR;
+        } else {
+            out.indices[i] = new.indices[i];
+            any_diff = true;
+        }
+    }
+
+    (any_diff, out)
+}
+
+/// Apply a diff paletted image (produced by `diff_paletted`) to a base paletted image,
+/// producing the updated paletted image.
+/// Essentially an uncompressing of the diff.
+pub fn apply_diff_paletted(base: &PalettedImage, diff: &PalettedImage) -> PalettedImage {
+    assert!(base.width == diff.width && base.height == diff.height);
+
+    let mut out = PalettedImage {
+        width: base.width,
+        height: base.height,
+        indices: vec![0u8; base.width * base.height],
+    };
+
+    for i in 0..(base.width * base.height) {
+        if diff.indices[i] == crate::palette::DIFF_COLOR {
+            out.indices[i] = base.indices[i];
+        } else {
+            out.indices[i] = diff.indices[i];
+        }
+    }
+
+    out
+}
+
 // -- helpers ---------------------------------------------------------------
 
 fn expand_to_rgba8(color: &ColorType, bit_depth: &BitDepth, buf: &[u8], info: &png::Info) -> Result<Vec<u8>, Box<dyn Error>> {
