@@ -171,12 +171,29 @@ fn merge_job_recursive(metrics: std::sync::Arc<Metrics>, db: &mut TileDB, z: i32
     Ok(resized)
 }
 
+fn get_z10_tile(db: &mut TileDB, x: i32, y: i32) -> PalettedImage {
+    let p1 = get_resized_tile(db, 11, x*2, y*2).unwrap_or_else(|_| PalettedImage{height:500, width:500, indices: vec![0u8; 500*500]});
+    let p2 = get_resized_tile(db, 11, x*2+1, y*2).unwrap_or_else(|_| PalettedImage{height:500, width:500, indices: vec![0u8; 500*500]});
+    let p3 = get_resized_tile(db, 11, x*2, y*2+1).unwrap_or_else(|_| PalettedImage{height:500, width:500, indices: vec![0u8; 500*500]});
+    let p4 = get_resized_tile(db, 11, x*2+1, y*2+1).unwrap_or_else(|_| PalettedImage{height:500, width:500, indices: vec![0u8; 500*500]});
+    merge_2x2(&p1, &p2, &p3, &p4)
+}
+
 fn merge_job_recursive_diff(metrics: std::sync::Arc<Metrics>, db: &mut TileDB, base_db: &mut TileDB, maxz: i32, z: i32, x: i32, y: i32, job_mask: &Vec<Vec<Vec<bool>>>) -> Result<PalettedImage, Box<dyn Error>> {
+    // Special treatment for z=10 tiles, as they're not stored in base_db, we need to compute those.
+    // Optimization biting you back ...
     if job_mask[z as usize][y as usize][x as usize] == false {
-        return match get_resized_tile(base_db, z, x, y) {
-            Err(_) => Ok(PalettedImage { width: 500, height: 500, indices: vec![0u8; 500*500] }),
-            Ok(img) => Ok(img)
-        };
+        return if z == 10 {
+            let img = get_z10_tile(base_db, x, y);
+            Ok(downscale_mode_weighted_2x2(&img, &WEIGHTS))
+        } else {
+            match get_resized_tile(base_db, z, x, y) {
+                Err(_) => {
+                    Ok(PalettedImage { width: 500, height: 500, indices: vec![0u8; 500*500] })
+                },
+                Ok(img) => Ok(img)
+            }
+        }
     }
     if z==maxz {
         return get_resized_tile_diff(db, base_db, z, x, y);
@@ -188,9 +205,9 @@ fn merge_job_recursive_diff(metrics: std::sync::Arc<Metrics>, db: &mut TileDB, b
     let p4 = merge_job_recursive_diff(metrics.clone(), db, base_db, maxz, z+1, x*2+1, y*2+1, job_mask)?;
 
     let merged = merge_2x2(&p1, &p2, &p3, &p4);
-    // if z != 10 {
-    //     // Skip storing layer 10 tiles to save space
-    //     // Layer 10 can be quickly generated from layer 11 clientside on-the-fly
+    if z != 10 {
+        // Skip storing layer 10 tiles to save space
+        // Layer 10 can be quickly generated from layer 11 clientside on-the-fly
 
         match base_db.get_tile(z, x as i32, y as i32) {
             Err(_) => {
@@ -206,7 +223,7 @@ fn merge_job_recursive_diff(metrics: std::sync::Arc<Metrics>, db: &mut TileDB, b
                 }
             }
         };
-    // }
+    }
     metrics.record_success();
 
     let resized = downscale_mode_weighted_2x2(&merged, &WEIGHTS);
