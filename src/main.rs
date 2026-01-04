@@ -10,6 +10,7 @@ mod tilesdb;
 mod ingest;
 mod reader_targz;
 mod merge;
+mod screenshot;
 
 fn usage(program: &str) {
     eprintln!("Usage: {} <command> [args]", program);
@@ -204,6 +205,11 @@ fn cmd_undiff(base: &str, diff: &str, out: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn cmd_screenshot(out: &str, base_url: &str, version: &str, x1: i64, y1: i64, x2: i64, y2: i64) -> Result<(), Box<dyn Error>> {
+    let img = screenshot::screenshot(base_url, version, x1, y1, x2, y2)?;
+    image::paletted_to_png_file(&img, &Path::new(out))
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
@@ -289,7 +295,7 @@ fn main() {
             }
         }
         "diff" => {
-            if args.len() < 3 { usage(&args[0]); std::process::exit(2); }
+            if args.len() < 4 { usage(&args[0]); std::process::exit(2); }
             let base = &args[2];
             let new= &args[3];
             let out = &args[4];
@@ -299,13 +305,27 @@ fn main() {
             }
         }
         "undiff" => {
-            if args.len() < 3 { usage(&args[0]); std::process::exit(2); }
+            if args.len() < 4 { usage(&args[0]); std::process::exit(2); }
             let base = &args[2];
             let diff= &args[3];
             let out = &args[4];
             if let Err(e) = cmd_undiff(base, diff, out) {
                 eprintln!("undiff failed: {}", e);
                 std::process::exit(10);
+            }
+        }
+        "screenshot" => {
+            if args.len() < 8 { usage(&args[0]); std::process::exit(2); }
+            let out = &args[2];
+            let url= &args[3];
+            let version = &args[4];
+            let x1 = args[5].parse::<i64>().unwrap();
+            let y1 = args[6].parse::<i64>().unwrap();
+            let x2 = args[7].parse::<i64>().unwrap();
+            let y2 = args[8].parse::<i64>().unwrap();
+            if let Err(e) = cmd_screenshot(out, url, version, x1, y1, x2, y2) {
+                eprintln!("screensot failed: {}", e);
+                std::process::exit(11);
             }
         }
         _ => {
