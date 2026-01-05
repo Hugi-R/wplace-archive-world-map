@@ -206,7 +206,7 @@ fn cmd_undiff(base: &str, diff: &str, out: &str) -> Result<(), Box<dyn Error>> {
 }
 
 fn cmd_screenshot(out: &str, base_url: &str, version: &str, x1: i64, y1: i64, x2: i64, y2: i64) -> Result<(), Box<dyn Error>> {
-    let img = screenshot::screenshot(base_url, version, x1, y1, x2, y2)?;
+    let img = screenshot::native_screenshot(base_url, version, x1, y1, x2, y2)?;
     image::paletted_to_png_file(&img, &Path::new(out))
 }
 

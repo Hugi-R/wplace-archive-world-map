@@ -1,8 +1,13 @@
 mod image;
 mod palette;
+mod screenshot;
 
 #[cfg(feature = "wasm")]
 use wasm_bindgen::prelude::*;
+#[cfg(feature = "wasm")]
+use wasm_bindgen_futures::JsFuture;
+#[cfg(feature = "wasm")]
+use web_sys::{Request, RequestInit, RequestMode, Response};
 
 use crate::image::PalettedImage;
 
@@ -167,4 +172,50 @@ pub fn diff_compressed_4to1(
     }
 
     Ok(png_bytes)
+}
+
+#[cfg(feature = "wasm")]
+#[wasm_bindgen]
+pub async fn wasm_screenshot(base_url: &str, version: &str, x1: i64, y1: i64, x2: i64, y2: i64) -> Result<Vec<u8>, JsValue> {
+    let mut target = screenshot::init_img(x1, y1, x2, y2);
+
+    let opts = RequestInit::new();
+    opts.set_method("GET");
+    opts.set_mode(RequestMode::Cors);
+
+    let window = web_sys::window().unwrap();
+
+    for y in y1..(y2+1) {
+        for x in x1..(x2+1) {
+            let url = format!("{}/{}/11/{}/{}.png", base_url, version, x, y);
+            let request = Request::new_with_str_and_init(&url, &opts)?;
+            let resp_value = JsFuture::from(window.fetch_with_request(&request)).await?;
+            assert!(resp_value.is_instance_of::<Response>());
+            let resp: Response = resp_value.dyn_into().unwrap();
+            let img = match resp.status() {
+                200 => {
+                    use js_sys::Uint8Array;
+                    let jsvalue = JsFuture::from(resp.array_buffer()?).await?;
+                    let data = Uint8Array::new(&jsvalue).to_vec();
+                    image::compressed_bytes_to_paletted(&data)
+                        .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to decode compressed tile: {}", e)))?
+                },
+                404 => {
+                    PalettedImage { width: 1000, height: 1000, indices: vec![0u8; 1000*1000] }
+                },
+                s => return Err(format!("Unexpected status code: {}", s).into())
+            };
+            assert!(img.height == 1000 && img.width == 1000);
+            screenshot::copy_img(&img, &mut target, x-x1, y-y1);
+        }
+    }
+
+
+    let mut png: Vec<u8> = Vec::new();
+    {
+        image::paletted_to_png(&target, &mut png)
+            .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to encode PNG: {}", e)))?;
+    }
+
+    Ok(png)
 }

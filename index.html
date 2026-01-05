@@ -264,13 +264,12 @@
     <div id="encart">
       <button id="encart-close" aria-label="Close encart" title="Close encart">&times;</button>
       <div id="encart-content">
-        <p>Explore Wplace world map archives at any zoom level, starting from August 2025.</p>
-        <p>Right-click the map for more tools</p>
-        <p>Each zoom level halves the image resolution. The pixel is chosen by majority. Deleted pixels can linger up to a week.</p>
-        <p>Data kindly provided by <a href="https://github.com/murolem/wplace-archives" target="_blank" rel="noopener noreferrer">murolem</a>, and previously <a href="https://www.reddit.com/user/OkInfluence36/" target="_blank" rel="noopener noreferrer">u/OkInfluence36</a>.</p>
-        <p>This site is hosted on my own hardware and Cloudflare free tier, with enough storage to last one year of daily archives!</p>
-        <p>Report bugs on <a href="https://github.com/Hugi-R/wplace-archive-world-map" target="_blank" rel="noopener noreferrer">GitHub</a> or to <a href="https://www.reddit.com/user/EralyonDotnet/" target="_blank" rel="noopener noreferrer">u/EralyonDotnet</a>.</p>
+        <p>This is the test server of wplace.eralyon.net.</p>
+        <p><a href="https://wplace.eralyon.net">Back to stable.</a></p>  
       </div>
+    </div>
+    <div id="screenshot">
+      <button id="screenshot-btn" title="Take pixel perfect screenshot">Screenshot</button>
     </div>
     <div id="stats">
       <p>Downscale: <span id="downscale-stats">NA</span></p>
@@ -301,6 +300,8 @@
 
   <script src="https://unpkg.com/maplibre-gl@5.7.1/dist/maplibre-gl.js"></script>
   <script type="module">
+    var wasmModule = null;
+
     var metricsDownscale = [];
     var metricsDecompress = [];
     var metricsDecompressNetwork = [];
@@ -785,37 +786,6 @@
       };
     }
 
-    // Merge function - tile2 on top of tile1
-    async function mergeTileBlobs(blob1, blob2, options = {}) {
-      const {
-        opacity = 1.0,        // Opacity of tile2 (0.0 to 1.0)
-        blendMode = 'normal'  // Canvas composite operation
-      } = options;
-      
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      
-      // Load both images
-      const img1 = await createImageBitmap(blob1);
-      const img2 = await createImageBitmap(blob2);
-      
-      canvas.width = img1.width;
-      canvas.height = img1.height;
-      
-      // Draw tile1 (base layer)
-      ctx.drawImage(img1, 0, 0);
-      
-      // Draw tile2 on top
-      ctx.globalAlpha = opacity;
-      ctx.globalCompositeOperation = blendMode;
-      ctx.drawImage(img2, 0, 0);
-      
-      // Convert to blob
-      return new Promise(resolve => {
-        canvas.toBlob(resolve, 'image/png');
-      });
-    }
-
     // Create map
     const _initialView = getInitialViewFromUrl();
     const map = new maplibregl.Map({
@@ -971,6 +941,22 @@
       map.zoomTo(zoom);
     }
 
+    // Map coordinate conversion functions
+    function lng2tileX(lng, z) {
+      return Math.floor((lng + 180) / 360 * Math.pow(2, z));
+    }
+    function lat2tileY(lat, z) {
+      const rad = lat * Math.PI / 180;
+      return Math.floor((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * Math.pow(2, z));
+    }
+    function tile2lng(x, z) {
+      return x / Math.pow(2, z) * 360 - 180;
+    }
+    function tile2lat(y, z) {
+      const n = Math.PI - 2 * Math.PI * y / Math.pow(2, z);
+      return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+    }
+
     // --- Canvas Overlay Setup ---
     let canvas, overlayToggle;
     map.on('load', function() {
@@ -1015,21 +1001,6 @@
       setOverlayVisibility();
 
       // --- Draw Tile Overlay ---
-      function lng2tileX(lng, z) {
-        return Math.floor((lng + 180) / 360 * Math.pow(2, z));
-      }
-      function lat2tileY(lat, z) {
-        const rad = lat * Math.PI / 180;
-        return Math.floor((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * Math.pow(2, z));
-      }
-      function tile2lng(x, z) {
-        return x / Math.pow(2, z) * 360 - 180;
-      }
-      function tile2lat(y, z) {
-        const n = Math.PI - 2 * Math.PI * y / Math.pow(2, z);
-        return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
-      }
-
       function drawTileOverlay() {
         if (!overlayToggle.checked) return;
         const ctx = canvas.getContext('2d');
@@ -1101,6 +1072,47 @@
         }
       });
     });
+
+    async function initWasm() {
+      if (wasmModule === null) {
+        const { default: init, init_panic_hook, wasm_screenshot} =
+            await import('/assets/wplace_archive_world_map.js');
+        await init();
+        init_panic_hook();
+        wasmModule = { wasm_screenshot };
+        console.log("WASM module loaded");
+      }
+    }
+
+    document.getElementById("screenshot-btn").onclick=async() => {
+      try {
+        await initWasm();
+        const rect = map.getContainer().getBoundingClientRect();
+        const topLeftLngLat = map.unproject([rect.left, rect.top]);
+        const botRightLngLat = map.unproject([rect.right, rect.bottom]);
+        const x1 = BigInt(lng2tileX(topLeftLngLat.lng, 11));
+        const y1 = BigInt(lat2tileY(topLeftLngLat.lat, 11));
+        const x2 = BigInt(lng2tileX(botRightLngLat.lng, 11));
+        const y2 = BigInt(lat2tileY(botRightLngLat.lat, 11));
+        if ((x2-x1 > 19) || (y2-y1 > 19)) {
+          throw new Error("Image would be too big. Zoom in and try again.")
+        }
+        const data = await wasmModule.wasm_screenshot("tiles", wplaceVersion, x1, y1, x2, y2);
+        const png = new Blob([data], { type: 'image/png' });
+        console.log(png);
+        const url = URL.createObjectURL(png);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${wplaceVersion}-${x1}-${y1}-${x2}-${y2}.png`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      } catch (e) {
+        alert(`Failed to create screenshot: ${e}`);
+        console.error(e);
+      }
+    };
   </script>
 </body>
 </html>
