@@ -3,6 +3,7 @@ use std::io::{Read, Write, Cursor, BufReader, BufRead, Seek};
 use std::path::Path;
 use std::error::Error;
 
+use anyhow::anyhow;
 use png::{Decoder, Encoder, ColorType, BitDepth};
 
 use crate::palette::{index_from_rgba, PALETTE};
@@ -65,7 +66,7 @@ pub fn png_file_to_paletted(input_path: &Path) -> Result<PalettedImage, Box<dyn 
 ///
 /// Uncompressed format:
 /// [u32 little-endian width][u32 little-endian height][width*height bytes of u8 indices]
-pub fn paletted_to_compressed_bytes(paletted: &PalettedImage) -> Result<Vec<u8>, Box<dyn Error>> {
+pub fn paletted_to_compressed_bytes(paletted: &PalettedImage) -> anyhow::Result<Vec<u8>> {
     // Serialize metadata + indices
     let mut out = Vec::with_capacity(8 + paletted.indices.len());
     out.extend(&((paletted.width as u32).to_le_bytes()));
@@ -73,7 +74,7 @@ pub fn paletted_to_compressed_bytes(paletted: &PalettedImage) -> Result<Vec<u8>,
     out.extend(&paletted.indices);
 
     // Compress with zstd
-    let mut enc = zstd::Encoder::new(Vec::new(), 10)?; // level 10 is good compression and speed. Level 12 is a lot slower. Even level 6 is worse.
+    let mut enc = zstd::Encoder::new(Vec::new(), 7)?; // level 7 is good compression and speed. Avoid 4-6 and > 10, very bad speed
     enc.write_all(&out)?;
     let compressed = enc.finish()?;
 
@@ -82,19 +83,19 @@ pub fn paletted_to_compressed_bytes(paletted: &PalettedImage) -> Result<Vec<u8>,
 
 /// Read the zstd-compressed paletted byte array (the format written by
 /// `paletted_to_compressed_bytes`) and convert it to a paletted image representation.
-pub fn compressed_bytes_to_paletted(compressed: &[u8]) -> Result<PalettedImage, Box<dyn Error>> {
+pub fn compressed_bytes_to_paletted(compressed: &[u8]) -> anyhow::Result<PalettedImage> {
     let mut dec = zstd::Decoder::new(Cursor::new(compressed))?;
     let mut decompressed = Vec::new();
     dec.read_to_end(&mut decompressed)?;
 
     if decompressed.len() < 8 {
-        return Err("decompressed data too short".into());
+        return Err(anyhow!("decompressed data too short"));
     }
     let width = u32::from_le_bytes([decompressed[0], decompressed[1], decompressed[2], decompressed[3]]);
     let height = u32::from_le_bytes([decompressed[4], decompressed[5], decompressed[6], decompressed[7]]);
     let expected = (width as usize) * (height as usize);
     if decompressed.len() != 8 + expected {
-        return Err(format!("decompressed length mismatch: expected {} bytes of indices, got {}", expected, decompressed.len() - 8).into());
+        return Err(anyhow!("decompressed length mismatch: expected {} bytes of indices, got {}", expected, decompressed.len() - 8));
     }
     let indices = decompressed[8..].to_vec();
 

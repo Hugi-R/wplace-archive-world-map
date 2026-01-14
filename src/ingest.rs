@@ -1,5 +1,6 @@
 use std::fs;
 use std::io;
+use std::path::Path;
 
 use crate::image;
 use crate::reader_targz::TarGzReader;
@@ -161,7 +162,7 @@ impl Ingester {
 
             let handle = std::thread::spawn(move || {
                 // Each worker opens its own database connection
-                let mut db = match TileDB::new(db_path, false) {
+                let mut db = match TileDB::new(Path::new(&db_path), false) {
                     Ok(db) => db,
                     Err(e) => {
                         eprintln!("Worker failed to open database: {}", e);
@@ -169,7 +170,7 @@ impl Ingester {
                     }
                 };
                 let mut base_db: Option<TileDB> = if base_db_path.is_some() {
-                    match TileDB::new(base_db_path.as_ref().unwrap().clone(), true) {
+                    match TileDB::new(Path::new(&base_db_path.unwrap()), true) {
                         Ok(bdb) => Some(bdb),
                         Err(e) => {
                             eprintln!("Worker failed to open base database for diffing: {}", e);
@@ -351,13 +352,13 @@ pub fn is_dir(path: &str) -> bool {
 /// Ingest from input source into output database
 pub fn ingest(input: &str, output: &str, base: &str, workers: usize) -> io::Result<()> {
     // Create the output database once to ensure it's initialized
-    let _db = TileDB::new(output, false)
+    let _db = TileDB::new(Path::new(output), false)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to create tile database: {}", e)))?;
     drop(_db); // Close the initial connection
 
     let mut ingester = if !base.is_empty() {
         // Verify base database exists
-        let _base_db = TileDB::new(base, true)
+        let _base_db = TileDB::new(Path::new(base), true)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to open base tile database: {}", e)))?;
         drop(_base_db);
         Ingester::new_diff(output.to_string(), workers, false, base.to_string())

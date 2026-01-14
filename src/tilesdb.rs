@@ -1,12 +1,12 @@
 use rusqlite::{Connection, params, Result as SqlResult};
-use std::time::Duration;
+use std::{path::{Path, PathBuf}, time::Duration};
 
 pub const DEFAULT_DB_PATH: &str = "./tiles.db";
 pub const SQLITE_BUSY_TIMEOUT_SECS: u64 = 20;
 pub const BATCH_SIZE: usize = 50;
 
 pub struct TileDB {
-    db_path: String,
+    db_path: PathBuf,
     read_only: bool,
     conn: Connection,
     pending_tiles: Vec<(i32, i32, i32, Vec<u8>, u32)>,
@@ -14,25 +14,18 @@ pub struct TileDB {
 
 impl TileDB {
     /// Create a new TileDB instance
-    pub fn new(db_path: impl AsRef<str>, read_only: bool) -> SqlResult<Self> {
-        let db_path_str = db_path.as_ref();
-        let path = if db_path_str.is_empty() {
-            DEFAULT_DB_PATH
-        } else {
-            db_path_str
-        };
-
+    pub fn new(db_path: &Path, read_only: bool) -> SqlResult<Self> {
         let conn = if read_only {
             Connection::open_with_flags(
-                path,
+                db_path,
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
             )?
         } else {
-            Connection::open(path)?
+            Connection::open(db_path)?
         };
 
         let mut db = TileDB {
-            db_path: path.to_string(),
+            db_path: db_path.to_path_buf(),
             read_only,
             conn,
             pending_tiles: Vec::new(),

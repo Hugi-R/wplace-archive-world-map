@@ -1,8 +1,10 @@
 use std::error::Error;
-use std::io::Write;
+use std::io::{Read, Write, Cursor};
 use std::path::{Path, PathBuf};
 use std::fs::{self, File};
 use std::time::Instant;
+
+use crate::tilesdb::TileDB;
 
 mod image;
 mod palette;
@@ -11,6 +13,7 @@ mod ingest;
 mod reader_targz;
 mod merge;
 mod screenshot;
+mod ingest_diff;
 
 fn usage(program: &str) {
     eprintln!("Usage: {} <command> [args]", program);
@@ -210,6 +213,79 @@ fn cmd_screenshot(out: &str, base_url: &str, version: &str, x1: i64, y1: i64, x2
     image::paletted_to_png_file(&img, &Path::new(out))
 }
 
+fn cmd_zst_bench(data_db: &str) -> anyhow::Result<()> {
+    let mut db = TileDB::new(Path::new(data_db), true)?;
+    
+    fn decompress(compressed: &[u8]) -> anyhow::Result<Vec<u8>> {
+        let mut dec = zstd::Decoder::new(Cursor::new(compressed))?;
+        let mut decompressed = Vec::new();
+        dec.read_to_end(&mut decompressed)?;
+        Ok(decompressed)
+    }
+
+    fn compress(data: &[u8], level: i32) -> anyhow::Result<Vec<u8>> {
+        let mut enc = zstd::Encoder::new(Vec::new(), level)?;
+        enc.write_all(data)?;
+        let compressed = enc.finish()?;
+        Ok(compressed)
+    }
+
+    fn avg(x: Vec<u128>) -> f64 {
+        let sum: f64 = x.iter().map(|&v| v as f64).sum();
+        sum / (x.len() as f64)
+    }
+
+    fn stdev(x: Vec<u128>, avg: f64) -> f64 {
+        let sum: f64 = x.iter().map(|&v| (v as f64 - avg)*(v as f64 - avg)).sum();
+        sum/(x.len() - 1) as f64
+    }
+
+    // header
+    println!("type,level,total,avg,stdev");
+
+    for level in 1..19 {
+        let mut comp_times = Vec::new();
+        let mut decomp_times = Vec::new();
+        let mut sizes = Vec::new();
+
+
+        let tiles = db.list_tiles(11)?;
+        for (x, y) in tiles {
+            let data = db.get_tile(11, x as i32, y as i32)?;
+            let data = decompress(&data)?;
+            let t =  std::time::Instant::now();
+            let comp = compress(&data, level)?;
+            let elapsed = t.elapsed().as_nanos();
+            comp_times.push(elapsed);
+            sizes.push(comp.len() as u128);
+            let t =  std::time::Instant::now();
+            let _ = decompress(&comp)?;
+            let elapsed = t.elapsed().as_nanos();
+            decomp_times.push(elapsed);
+        }
+
+        let total: u128 = comp_times.iter().sum();
+        let a = avg(comp_times.clone());
+        let d = stdev(comp_times.clone(), a);
+        println!("compression,{level},{total},{a},{d}");
+
+        let total: u128 = decomp_times.iter().sum();
+        let a = avg(decomp_times.clone());
+        let d = stdev(decomp_times.clone(), a);
+        println!("decompression,{level},{total},{a},{d}");
+
+        let total: u128 = sizes.iter().sum();
+        let a = avg(sizes.clone());
+        let d = stdev(sizes.clone(), a);
+        println!("size,{level},{total},{a},{d}");
+    }
+    Ok(())
+}
+
+fn cmd_diffconvert(out_folder: &str, diff_folder: &str) -> anyhow::Result<()> {
+    ingest_diff::convert(out_folder, diff_folder, 16)
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
@@ -327,6 +403,17 @@ fn main() {
                 eprintln!("screensot failed: {}", e);
                 std::process::exit(11);
             }
+        }
+        "diffconvert" => {
+            if args.len() < 3 { usage(&args[0]); std::process::exit(2); }
+            let out = &args[2];
+            let diff= &args[3];
+            cmd_diffconvert(out, diff).unwrap();
+        }
+        "zstbench" => {
+            if args.len() < 3 { usage(&args[0]); std::process::exit(2); }
+            let data = &args[2];
+            cmd_zst_bench(data).unwrap();
         }
         _ => {
             usage(&args[0]);

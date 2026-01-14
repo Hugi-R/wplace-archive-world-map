@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::path::Path;
 
 use rayon::prelude::*;
 
@@ -254,7 +255,7 @@ pub fn merge(input: &str, workers: usize) -> Result<(), Box<dyn Error>> {
         rayon::ThreadPoolBuilder::new().num_threads(workers).build_global().unwrap();
     }
 
-    let mut db = TileDB::new(input, false)?;
+    let mut db = TileDB::new(Path::new(input), false)?;
     let job_mask = build_job_mask(&mut db, 11)?;
     let total_jobs = job_mask.iter().map(|layer| {
         layer.iter().map(|row| {
@@ -294,7 +295,7 @@ pub fn merge(input: &str, workers: usize) -> Result<(), Box<dyn Error>> {
             return PalettedImage { width: 500, height: 500, indices: vec![0u8; 500*500] };
         }
         // Each thread gets its own TileDB instance to avoid locking issues. SQLite can handle concurrency fine in the same process.
-        let mut local_db = TileDB::new(input, false).unwrap();
+        let mut local_db = TileDB::new(Path::new(input), false).unwrap();
         let res = match merge_job_recursive(metrics.clone(), &mut local_db, z, x, y, &job_mask) {
             Ok(img) => img,
             Err(e) => {
@@ -320,7 +321,7 @@ pub fn merge_diff(input: &str, base: &str, workers: usize) -> Result<(), Box<dyn
         rayon::ThreadPoolBuilder::new().num_threads(workers).build_global().unwrap();
     }
 
-    let mut db = TileDB::new(input, false)?;
+    let mut db = TileDB::new(Path::new(input), false)?;
     let job_mask = build_job_mask(&mut db, 11)?;
     let total_jobs = job_mask.iter().map(|layer| {
         layer.iter().map(|row| {
@@ -360,8 +361,8 @@ pub fn merge_diff(input: &str, base: &str, workers: usize) -> Result<(), Box<dyn
             return PalettedImage { width: 500, height: 500, indices: vec![0u8; 500*500] };
         }
         // Each thread gets its own TileDB instance to avoid locking issues. SQLite can handle concurrency fine in the same process.
-        let mut local_db = TileDB::new(input, false).unwrap();
-        let mut base_db = TileDB::new(base, true).unwrap();
+        let mut local_db = TileDB::new(Path::new(input), false).unwrap();
+        let mut base_db = TileDB::new(Path::new(base), true).unwrap();
         let res = match merge_job_recursive_diff(metrics.clone(), &mut local_db, &mut base_db, 11, z, x, y, &job_mask) {
             Ok(img) => img,
             Err(e) => {
@@ -376,7 +377,7 @@ pub fn merge_diff(input: &str, base: &str, workers: usize) -> Result<(), Box<dyn
         res
     }).collect();
 
-    let mut base_db = TileDB::new(base, true)?;
+    let mut base_db = TileDB::new(Path::new(base), true)?;
     merge_job_recursive_diff(metrics.clone(), &mut db, &mut base_db, z_level_parallelism, 0, 0, 0, &job_mask)?;
     
     metrics.print_metrics();

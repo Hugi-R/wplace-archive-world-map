@@ -1,5 +1,6 @@
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
+use wplacetools;
 
 pub const PALETTE_SIZE: usize = 256;
 pub const TRANSPARENT: u8 = 0u8;
@@ -111,3 +112,19 @@ pub fn rgba_from_index(i: u8) -> [u8; 4] {
 pub fn index_from_rgba(rgba: [u8; 4]) -> u8 {
     *PALETTE_INV.get(&rgba).unwrap_or(&255u8)
 }
+
+/// wplacetools' palette: index -> this palette: index
+pub static WPLACETOOLS_PALETTE_CONVERSION: Lazy<[u8; PALETTE_SIZE]> = Lazy::new(|| {
+    let mut a = [255u8; PALETTE_SIZE];
+
+    // Special case for transparent, as wplacetools palette does not store alpha channel
+    a[0] = TRANSPARENT;
+
+    for i in 1..wplacetools::GLOBAL_PALETTE.len() {
+        let [r, g, b] = wplacetools::GLOBAL_PALETTE[i];
+        let this_index = index_from_rgba([r, g, b, 255]);
+        a[i] = this_index;
+    }
+
+    a
+});
