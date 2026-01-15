@@ -397,6 +397,77 @@ func getMimeType(filename string) string {
 	}
 }
 
+// initializeDiffs scans for database files and initializes connections
+func (ts *TileServer) initializeDiffs() error {
+	files, err := os.ReadDir(ts.dataPath)
+	if err != nil {
+		return fmt.Errorf("failed to read directory: %w", err)
+	}
+
+	dbCount := 0
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+
+		filename := file.Name()
+		if !strings.HasPrefix(filename, "diff_") || !strings.HasSuffix(filename, ".db") {
+			continue
+		}
+
+		// Extract date from filename (diff_2025-01-01T01.db -> 2025-01-01T01)
+		name := strings.TrimSuffix(filename, ".db")
+		parts := strings.Split(name, "_")
+		var version string
+		var description string
+		if len(parts) == 2 {
+			version = parts[0]
+			description = parts[1]
+		} else {
+			version = parts[0]
+			description = ""
+		}
+		ts.versionDescriptions[version] = description
+
+		filename = ts.dataPath + "/" + filename
+		log.Printf("Initializing database: %s (version %s)", filename, version)
+
+		db, err := sql.Open("sqlite3", filename+"?cache=shared&mode=ro")
+		if err != nil {
+			return fmt.Errorf("failed to open database %s: %w", filename, err)
+		}
+
+		// Configure connection pool
+		db.SetMaxOpenConns(10)
+		db.SetMaxIdleConns(3)
+		db.SetConnMaxLifetime(24 * time.Hour) // Once a day refresh connections
+
+		// Test the connection
+		if err := db.Ping(); err != nil {
+			db.Close()
+			return fmt.Errorf("failed to ping database %s: %w", filename, err)
+		}
+
+		// Prepare the statement for this database
+		stmt, err := db.Prepare("SELECT data FROM tiles WHERE z = ? AND x = ? AND y = ?")
+		if err != nil {
+			db.Close()
+			return fmt.Errorf("failed to prepare statement for %s: %w", filename, err)
+		}
+
+		ts.stmts[version] = stmt
+		ts.dbPool[version] = db
+		dbCount++
+	}
+
+	if dbCount == 0 {
+		return fmt.Errorf("no database files found (looking for v*.db files)")
+	}
+
+	log.Printf("Initialized %d database(s)", dbCount)
+	return nil
+}
+
 func main() {
 	port := os.Getenv("PORT")
 	if port == "" {

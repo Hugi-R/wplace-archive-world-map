@@ -1,7 +1,8 @@
 bin
 data
 tmpdata
-
+tmp
+*.db
 
 # Added by cargo
 
