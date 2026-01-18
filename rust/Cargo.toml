@@ -1,0 +1,34 @@
+[package]
+name = "wplace-archive-world-map"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+once_cell = "1.21.3"
+png = "0.18.0"
+zstd = "0.13.3"
+rusqlite = { version = "0.31", features = ["bundled"], optional = true }
+crc32fast = "1.3"
+tar = "0.4"
+flate2 = "1.0"
+wasm-bindgen = { version = "0.2", optional = true }
+console_error_panic_hook = { version = "0.1.7", optional = true }
+rayon = "1.11.0"
+ureq = { version = "3.1.4", optional = true }
+wasm-bindgen-futures = { version = "0.4.56", optional = true }
+js-sys = { version = "0.3.83", optional = true }
+web-sys = { version = "0.3.83", optional = true, features = ['Headers', 'Request', 'RequestInit', 'RequestMode', 'Response', 'Window'] }
+anyhow = "1.0.100"
+wplacetools = {path = "../vendor/wplacetools" }
+chrono = "0.4.42"
+
+[features]
+default = ["full"]
+native = ["rusqlite", "ureq"]
+wasm = ["wasm-bindgen", "console_error_panic_hook", "wasm-bindgen-futures", "js-sys", "web-sys"]
+# Full build with all features (CLI + library)
+full = ["native", "wasm"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
