@@ -282,8 +282,20 @@ fn cmd_zst_bench(data_db: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_diffconvert(out_folder: &str, diff_folder: &str) -> anyhow::Result<()> {
-    ingest_diff::convert(out_folder, diff_folder, 16)
+fn cmd_diffconvert(out_folder: &str, diff_folder: &str, workers: usize) -> anyhow::Result<()> {
+    ingest_diff::convert(out_folder, diff_folder, workers)
+}
+
+fn cmd_apgn(in_folder: &str, out_file: &str) -> anyhow::Result<()> {
+    let mut frames = Vec::new();
+    for entry in std::fs::read_dir(in_folder)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().map_or(false, |ext| ext == "png") {
+            frames.push(image::png_file_to_paletted(&path)?);
+        }
+    }
+    image::paletted_to_apng(frames, std::fs::File::create(out_file)?, 200)
 }
 
 fn main() {
@@ -408,12 +420,23 @@ fn main() {
             if args.len() < 3 { usage(&args[0]); std::process::exit(2); }
             let out = &args[2];
             let diff= &args[3];
-            cmd_diffconvert(out, diff).unwrap();
+            let workers = if args.len() > 4 {
+                args[4].parse::<usize>().unwrap_or(10)
+            } else {
+                10
+            };
+            cmd_diffconvert(out, diff, workers).unwrap();
         }
         "zstbench" => {
-            if args.len() < 3 { usage(&args[0]); std::process::exit(2); }
+            if args.len() < 2 { usage(&args[0]); std::process::exit(2); }
             let data = &args[2];
             cmd_zst_bench(data).unwrap();
+        }
+        "apgn" => {
+            if args.len() < 3 { usage(&args[0]); std::process::exit(2); }
+            let in_folder = &args[2];
+            let out_file = &args[3];
+            cmd_apgn(in_folder, out_file).unwrap();
         }
         _ => {
             usage(&args[0]);

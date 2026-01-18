@@ -1,3 +1,4 @@
+use std::any;
 use std::fs::File;
 use std::io::{Read, Write, Cursor, BufReader, BufRead, Seek};
 use std::path::Path;
@@ -21,8 +22,20 @@ impl Clone for PalettedImage {
     }
 }
 
+impl PalettedImage {
+    pub fn to_png(&self) -> anyhow::Result<Vec<u8>> {
+        let mut png: Vec<u8> = Vec::new();
+        paletted_to_png(self, &mut png)?;
+        Ok(png)
+    }
+
+    pub fn to_compressed_bytes(&self) -> anyhow::Result<Vec<u8>> {
+        paletted_to_compressed_bytes(self)
+    }
+}
+
 /// Convert a PNG stream (from BufReader) to a paletted image representation.
-pub fn png_to_paletted<R: BufRead + Seek>(reader: R) -> Result<PalettedImage, Box<dyn Error>> {
+pub fn png_to_paletted<R: BufRead + Seek>(reader: R) -> anyhow::Result<PalettedImage> {
     let decoder = Decoder::new(reader);
     let mut png_reader = decoder.read_info()?;
     // Require reader-provided buffer size; otherwise return an error.
@@ -36,7 +49,7 @@ pub fn png_to_paletted<R: BufRead + Seek>(reader: R) -> Result<PalettedImage, Bo
     let width = info.width as usize;
     let height = info.height as usize;
     if rgba.len() != width * height * 4 {
-        return Err(format!("unexpected rgba length {} for {}x{}", rgba.len(), width, height).into());
+        return Err(anyhow!("unexpected rgba length {} for {}x{}", rgba.len(), width, height).into());
     }
 
     // Map RGBA -> palette index
@@ -56,7 +69,7 @@ pub fn png_to_paletted<R: BufRead + Seek>(reader: R) -> Result<PalettedImage, Bo
 }
 
 /// Read a PNG from `input_path` and convert it to a paletted image representation.
-pub fn png_file_to_paletted(input_path: &Path) -> Result<PalettedImage, Box<dyn Error>> {
+pub fn png_file_to_paletted(input_path: &Path) -> anyhow::Result<PalettedImage> {
     let f = File::open(input_path)?;
     let br = BufReader::new(f);
     png_to_paletted(br)
@@ -107,7 +120,7 @@ pub fn compressed_bytes_to_paletted(compressed: &[u8]) -> anyhow::Result<Palette
 }
 
 /// Convert a paletted image back to a PNG.
-pub fn paletted_to_png<W: Write>(paletted: &PalettedImage, out: W) -> Result<(), Box<dyn Error>> {
+pub fn paletted_to_png<W: Write>(paletted: &PalettedImage, out: W) -> anyhow::Result<()> {
     {
         let mut encoder = Encoder::new(out, paletted.width as u32, paletted.height as u32);
         encoder.set_color(ColorType::Indexed);
@@ -128,6 +141,34 @@ pub fn paletted_to_png<W: Write>(paletted: &PalettedImage, out: W) -> Result<(),
 
         let mut writer = encoder.write_header()?;
         writer.write_image_data(&paletted.indices)?;
+    }
+    Ok(())
+}
+
+pub fn paletted_to_apng<W: Write>(paletted: Vec<PalettedImage>, out: W, frame_delay_ms: u16) -> anyhow::Result<()> {
+    assert!(paletted.len() >= 1, "need at least one frame for APNG");
+    let mut encoder = Encoder::new(out, paletted[0].width as u32, paletted[0].height as u32);
+    encoder.set_color(ColorType::Indexed);
+    encoder.set_depth(BitDepth::Eight);
+    encoder.set_compression(png::Compression::Fast);
+
+    // Build palette (RGB triples) and tRNS (alpha table)
+    let mut palette_bytes = Vec::with_capacity(256 * 3);
+    let mut trns = Vec::with_capacity(256);
+    for rgba in PALETTE.iter() {
+        palette_bytes.push(rgba[0]);
+        palette_bytes.push(rgba[1]);
+        palette_bytes.push(rgba[2]);
+        trns.push(rgba[3]);
+    }
+    encoder.set_palette(palette_bytes);
+    encoder.set_trns(trns.as_slice());
+    encoder.set_animated(paletted.len() as u32, 0)?;
+    encoder.set_frame_delay(frame_delay_ms, 1000)?;
+    let mut writer = encoder.write_header()?;
+
+    for frame in paletted.iter() {
+        writer.write_image_data(&frame.indices)?;
     }
     Ok(())
 }
@@ -377,7 +418,7 @@ pub fn diff_paletted(base: &PalettedImage, new: &PalettedImage) -> (bool, Palett
     let mut any_diff = false;
     for i in 0..(base.width * base.height) {
         if base.indices[i] == new.indices[i] {
-            out.indices[i] = crate::palette::DIFF_COLOR;
+            out.indices[i] = crate::palette::DIFF_NO_CHANGE;
         } else {
             out.indices[i] = new.indices[i];
             any_diff = true;
@@ -400,7 +441,7 @@ pub fn apply_diff_paletted(base: &PalettedImage, diff: &PalettedImage) -> Palett
     };
 
     for i in 0..(base.width * base.height) {
-        if diff.indices[i] == crate::palette::DIFF_COLOR {
+        if diff.indices[i] == crate::palette::DIFF_NO_CHANGE {
             out.indices[i] = base.indices[i];
         } else {
             out.indices[i] = diff.indices[i];
@@ -412,7 +453,7 @@ pub fn apply_diff_paletted(base: &PalettedImage, diff: &PalettedImage) -> Palett
 
 // -- helpers ---------------------------------------------------------------
 
-fn expand_to_rgba8(color: &ColorType, bit_depth: &BitDepth, buf: &[u8], info: &png::Info) -> Result<Vec<u8>, Box<dyn Error>> {
+fn expand_to_rgba8(color: &ColorType, bit_depth: &BitDepth, buf: &[u8], info: &png::Info) -> anyhow::Result<Vec<u8>> {
     match color {
         ColorType::Rgba => {
             match bit_depth {
@@ -426,7 +467,7 @@ fn expand_to_rgba8(color: &ColorType, bit_depth: &BitDepth, buf: &[u8], info: &p
                     }
                     Ok(out)
                 }
-                _ => Err(format!("unsupported bit depth for Rgba: {:?}", bit_depth).into())
+                _ => Err(anyhow!("unsupported bit depth for Rgba: {:?}", bit_depth).into())
             }
         }
         ColorType::Rgb => {
@@ -444,7 +485,7 @@ fn expand_to_rgba8(color: &ColorType, bit_depth: &BitDepth, buf: &[u8], info: &p
                     }
                     Ok(out)
                 }
-                _ => Err(format!("unsupported bit depth for RGB: {:?}", bit_depth).into())
+                _ => Err(anyhow!("unsupported bit depth for RGB: {:?}", bit_depth).into())
             }
         }
         ColorType::Grayscale => {
@@ -463,7 +504,7 @@ fn expand_to_rgba8(color: &ColorType, bit_depth: &BitDepth, buf: &[u8], info: &p
                     }
                     Ok(out)
                 }
-                _ => Err(format!("unsupported bit depth for Grayscale: {:?}", bit_depth).into())
+                _ => Err(anyhow!("unsupported bit depth for Grayscale: {:?}", bit_depth).into())
             }
         }
         ColorType::GrayscaleAlpha => {
@@ -483,7 +524,7 @@ fn expand_to_rgba8(color: &ColorType, bit_depth: &BitDepth, buf: &[u8], info: &p
                     }
                     Ok(out)
                 }
-                _ => Err(format!("unsupported bit depth for GrayscaleAlpha: {:?}", bit_depth).into())
+                _ => Err(anyhow!("unsupported bit depth for GrayscaleAlpha: {:?}", bit_depth).into())
             }
         }
         ColorType::Indexed => {
@@ -491,13 +532,13 @@ fn expand_to_rgba8(color: &ColorType, bit_depth: &BitDepth, buf: &[u8], info: &p
             let pixel_count = (info.width as usize) * (info.height as usize);
             let indices = match bit_depth {
                 BitDepth::Eight => buf.to_vec(),
-                BitDepth::Sixteen => return Err("unexpected 16-bit for Indexed".into()),
+                BitDepth::Sixteen => return Err(anyhow!("unexpected 16-bit for Indexed").into()),
                 BitDepth::One | BitDepth::Two | BitDepth::Four => unpack_indices(buf, *bit_depth, pixel_count)?,
-                _ => return Err(format!("unsupported bit depth for Indexed: {:?}", bit_depth).into()),
+                _ => return Err(anyhow!("unsupported bit depth for Indexed: {:?}", bit_depth).into()),
             };
 
             // palette present in info.palette as RGB triples
-            let palette = info.palette.as_ref().ok_or("indexed PNG without palette")?;
+            let palette = info.palette.as_ref().ok_or(anyhow!("indexed PNG without palette"))?;
             let trns = info.trns.as_ref();
             let mut out = Vec::with_capacity(pixel_count * 4);
             for &idx in indices.iter() {
@@ -516,11 +557,11 @@ fn expand_to_rgba8(color: &ColorType, bit_depth: &BitDepth, buf: &[u8], info: &p
             }
             Ok(out)
         }
-        _ => Err(format!("unsupported color type: {:?}", color).into())
+        _ => Err(anyhow!("unsupported color type: {:?}", color).into())
     }
 }
 
-fn unpack_indices(buf: &[u8], bit_depth: BitDepth, pixel_count: usize) -> Result<Vec<u8>, Box<dyn Error>> {
+fn unpack_indices(buf: &[u8], bit_depth: BitDepth, pixel_count: usize) -> anyhow::Result<Vec<u8>> {
     let mut out = Vec::with_capacity(pixel_count);
     match bit_depth {
         BitDepth::One => {
@@ -551,7 +592,7 @@ fn unpack_indices(buf: &[u8], bit_depth: BitDepth, pixel_count: usize) -> Result
                 }
             }
         }
-        _ => return Err("unsupported small bit depth".into()),
+        _ => return Err(anyhow!("unsupported small bit depth").into()),
     }
     out.truncate(pixel_count);
     Ok(out)

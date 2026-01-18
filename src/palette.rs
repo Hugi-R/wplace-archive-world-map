@@ -4,8 +4,10 @@ use wplacetools;
 
 pub const PALETTE_SIZE: usize = 256;
 pub const TRANSPARENT: u8 = 0u8;
+pub const BLACK: u8 = 1u8;
+pub const WHITE: u8 = 5u8;
 pub const DEBUG_COLOR: u8 = 255u8;
-pub const DIFF_COLOR: u8 = 254u8;
+pub const DIFF_NO_CHANGE: u8 = 254u8;
 
 /// Palette: index -> RGBA (r,g,b,a)
 pub static PALETTE: Lazy<[[u8; 4]; PALETTE_SIZE]> = Lazy::new(|| {
@@ -18,7 +20,7 @@ pub static PALETTE: Lazy<[[u8; 4]; PALETTE_SIZE]> = Lazy::new(|| {
     a[DEBUG_COLOR as usize] = [255, 0, 255, 255]; // Debug (unknown)
 
     // reserved 254 for diff color
-    a[DIFF_COLOR as usize] = [255, 1, 255, 255]; // Diff (reserved)
+    a[DIFF_NO_CHANGE as usize] = [255, 1, 255, 255]; // Diff (reserved)
 
     macro_rules! set {
         ($idx:expr, $r:expr, $g:expr, $b:expr) => {
@@ -27,11 +29,11 @@ pub static PALETTE: Lazy<[[u8; 4]; PALETTE_SIZE]> = Lazy::new(|| {
     }
 
     // Ordered ascending by index with color name comments
-    set!(1, 0, 0, 0); // Black
+    set!(BLACK, 0, 0, 0); // Black
     set!(2, 60, 60, 60); // Dark Gray
     set!(3, 120, 120, 120); // Gray
     set!(4, 210, 210, 210); // Light Gray
-    set!(5, 255, 255, 255); // White
+    set!(WHITE, 255, 255, 255); // White
     set!(6, 96, 0, 24); // Deep Red
     set!(7, 237, 28, 36); // Red
     set!(8, 255, 127, 39); // Orange
@@ -128,3 +130,15 @@ pub static WPLACETOOLS_PALETTE_CONVERSION: Lazy<[u8; PALETTE_SIZE]> = Lazy::new(
 
     a
 });
+
+pub fn png_palette() -> (Vec<u8>, Vec<u8>) {
+    let mut palette_bytes = Vec::with_capacity(256 * 3);
+    let mut trns = Vec::with_capacity(256);
+    for rgba in PALETTE.iter() {
+        palette_bytes.push(rgba[0]);
+        palette_bytes.push(rgba[1]);
+        palette_bytes.push(rgba[2]);
+        trns.push(rgba[3]);
+    }
+    (palette_bytes, trns)
+}

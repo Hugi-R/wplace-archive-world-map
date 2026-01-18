@@ -177,7 +177,7 @@ pub fn diff_compressed_4to1(
 #[cfg(feature = "wasm")]
 #[wasm_bindgen]
 pub async fn wasm_screenshot(base_url: &str, version: &str, x1: i64, y1: i64, x2: i64, y2: i64) -> Result<Vec<u8>, JsValue> {
-    let mut target = screenshot::init_img(x1, y1, x2, y2);
+    let mut target = screenshot::init_img(x1, y1, x2, y2, palette::TRANSPARENT);
 
     let opts = RequestInit::new();
     opts.set_method("GET");
@@ -219,3 +219,89 @@ pub async fn wasm_screenshot(base_url: &str, version: &str, x1: i64, y1: i64, x2
 
     Ok(png)
 }
+
+#[cfg(feature = "wasm")]
+#[wasm_bindgen]
+pub async fn wasm_video(base_url: &str, x1: i64, y1: i64, x2: i64, y2: i64) -> Result<Vec<u8>, JsValue> {
+    use std::collections::HashMap;
+    
+    let opts = RequestInit::new();
+    opts.set_method("GET");
+    opts.set_mode(RequestMode::Cors);
+
+    let window = web_sys::window().unwrap();
+
+    let mut history:HashMap<(u16, u16), screenshot::TileHistory> = HashMap::new();
+    for y in y1..(y2+1) {
+        for x in x1..(x2+1) {
+            let url = format!("{}/all/11/{}/{}.zst", base_url, x, y);
+            let request = Request::new_with_str_and_init(&url, &opts)?;
+            let resp_value = JsFuture::from(window.fetch_with_request(&request)).await?;
+            assert!(resp_value.is_instance_of::<Response>());
+            let resp: Response = resp_value.dyn_into().unwrap();
+            match resp.status() {
+                200 => {
+                    use js_sys::Uint8Array;
+                    let jsvalue = JsFuture::from(resp.array_buffer()?).await?;
+                    let data = Uint8Array::new(&jsvalue).to_vec();
+                    if data.len() > 0 {
+                        screenshot::TileHistory::from_bytes(x as u16, y as u16, &data)
+                            .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to decode tile history: {}", e)))
+                            .map(|th| { history.insert((x as u16, y as u16), th); })?;
+                    }
+                },
+                404 => {
+                    // empty tile, do nothing
+                },
+                s => return Err(format!("Unexpected status code: {}", s).into())
+            }
+        }
+    }
+
+    let png = screenshot::apng_from_history(history, 200)
+        .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to create APNG: {}", e)))?;
+
+    Ok(png)
+}
+
+fn images_from_history(data: &Vec<u8>) -> anyhow::Result<Vec<u8>> {
+    let mut builder = tar::Builder::new(Vec::new());
+
+    let mut last_img: Option<PalettedImage> = None; 
+    let mut offset = 0;
+    while offset < data.len() {
+        let date_hours = u32::from_le_bytes([data[offset+0], data[offset+1], data[offset+2], data[offset+3]]) as usize;
+        offset += 4;
+        let block_size = u32::from_le_bytes([data[offset+0], data[offset+1], data[offset+2], data[offset+3]]) as usize;
+        offset += 4;
+        console_log!("date {} size {}", date_hours, block_size);
+        let diff_paletted = image::compressed_bytes_to_paletted(&data[offset..(offset+block_size)])?;
+        offset += block_size;
+
+        let paletted = if let Some(last) = &last_img {
+            let applied = image::apply_diff_paletted(last, &diff_paletted);
+            console_log!("applied diff");
+            last_img = Some(applied);
+            last_img.as_ref().unwrap()
+        } else {
+            last_img = Some(diff_paletted);
+            last_img.as_ref().unwrap()
+        };
+        let png = paletted.to_png()?;
+
+        let mut header = tar::Header::new_gnu();
+        let filename = format!("{}.png", date_hours);
+        header.set_path(filename)?;
+        header.set_size(png.len() as u64);
+        header.set_mode(0o644);
+        let dt =chrono::DateTime::from_timestamp((date_hours as i64)*3600, 0).unwrap_or_default();
+        header.set_mtime(dt.timestamp() as u64);
+        header.set_cksum();
+        builder.append(&header, &png[..])?;
+
+    }
+
+    let data = builder.into_inner()?;
+    Ok(data)
+}
+

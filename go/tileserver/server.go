@@ -4,6 +4,7 @@ package main
 import (
 	"bytes"
 	"database/sql"
+	"encoding/binary"
 	"fmt"
 	"image"
 	"image/color"
@@ -33,6 +34,9 @@ type TileServer struct {
 	dbPool              map[string]*sql.DB
 	stmts               map[string]*sql.Stmt
 	versionDescriptions map[string]string
+	diffPool            map[string]*sql.DB
+	diffStmts           map[string]*sql.Stmt
+	diffSortedDates     []string
 	indexHtml           string
 	latestVersion       string
 	previewImage        []byte
@@ -46,6 +50,9 @@ func NewTileServer(dataPath string) (*TileServer, error) {
 		dbPool:              make(map[string]*sql.DB),
 		stmts:               make(map[string]*sql.Stmt),
 		versionDescriptions: make(map[string]string),
+		diffPool:            make(map[string]*sql.DB),
+		diffStmts:           make(map[string]*sql.Stmt),
+		diffSortedDates:     make([]string, 0),
 		indexHtml:           "",
 		assets:              make(map[string]*Asset),
 	}
@@ -67,6 +74,9 @@ func NewTileServer(dataPath string) (*TileServer, error) {
 	}
 	if err := ts.LoadAssets(); err != nil {
 		return nil, err
+	}
+	if err := ts.initializeDiffs(); err != nil {
+		fmt.Printf("Warning: failed to load diffs: %v\n", err)
 	}
 	return ts, nil
 }
@@ -185,6 +195,35 @@ func GetTileKey(z, x, y int) string {
 	return fmt.Sprintf("%d/%d/%d", z, x, y)
 }
 
+// ParseTileCoords parse and check tile coordinates
+func ParseTileCoords(zStr, xStr, yStr string) (z, x, y int, err error) {
+	z, err = strconv.Atoi(zStr)
+	if err != nil {
+		err = fmt.Errorf("invalid z coordinate")
+		return
+	}
+
+	x, err = strconv.Atoi(xStr)
+	if err != nil {
+		err = fmt.Errorf("invalid x coordinate")
+		return
+	}
+
+	y, err = strconv.Atoi(yStr)
+	if err != nil {
+		err = fmt.Errorf("invalid y coordinate")
+		return
+	}
+
+	// Validate coordinates (basic sanity check)
+	if z < 0 || z > 11 || x < 0 || y < 0 || x >= (1<<z) || y >= (1<<z) {
+		err = fmt.Errorf("tile coordinate out of bound")
+		return
+	}
+
+	return
+}
+
 // serveTile handles tile requests
 func (ts *TileServer) serveTile(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
@@ -193,28 +232,9 @@ func (ts *TileServer) serveTile(w http.ResponseWriter, r *http.Request) {
 	xStr := vars["x"]
 	yStr := vars["y"]
 
-	// Parse coordinates
-	z, err := strconv.Atoi(zStr)
+	z, x, y, err := ParseTileCoords(zStr, xStr, yStr)
 	if err != nil {
-		http.Error(w, "Invalid z coordinate", http.StatusBadRequest)
-		return
-	}
-
-	x, err := strconv.Atoi(xStr)
-	if err != nil {
-		http.Error(w, "Invalid x coordinate", http.StatusBadRequest)
-		return
-	}
-
-	y, err := strconv.Atoi(yStr)
-	if err != nil {
-		http.Error(w, "Invalid y coordinate", http.StatusBadRequest)
-		return
-	}
-
-	// Validate coordinates (basic sanity check)
-	if z < 0 || z > 11 || x < 0 || y < 0 || x >= (1<<z) || y >= (1<<z) {
-		http.Error(w, "Invalid tile coordinates", http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -231,7 +251,7 @@ func (ts *TileServer) serveTile(w http.ResponseWriter, r *http.Request) {
 
 	// Set appropriate headers
 	tileKey := GetTileKey(z, x, y)
-	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Length", strconv.Itoa(len(tileData)))
 	w.Header().Set("Cache-Control", "public, max-age=86400") // Cache for 1 day
 	w.Header().Set("ETag", fmt.Sprintf(`"%s-%s"`, version, tileKey))
@@ -399,7 +419,7 @@ func getMimeType(filename string) string {
 
 // initializeDiffs scans for database files and initializes connections
 func (ts *TileServer) initializeDiffs() error {
-	files, err := os.ReadDir(ts.dataPath)
+	files, err := os.ReadDir(path.Join(ts.dataPath, "diffs"))
 	if err != nil {
 		return fmt.Errorf("failed to read directory: %w", err)
 	}
@@ -415,57 +435,228 @@ func (ts *TileServer) initializeDiffs() error {
 			continue
 		}
 
-		// Extract date from filename (diff_2025-01-01T01.db -> 2025-01-01T01)
-		name := strings.TrimSuffix(filename, ".db")
+		// Extract date from filename (diff_v32.001_2025-01-01T01.db -> 2025-01-01T01)
+		name := strings.TrimPrefix(strings.TrimSuffix(filename, ".db"), "diff_")
 		parts := strings.Split(name, "_")
-		var version string
-		var description string
-		if len(parts) == 2 {
-			version = parts[0]
-			description = parts[1]
-		} else {
-			version = parts[0]
-			description = ""
+		if len(parts) != 2 {
+			continue
 		}
-		ts.versionDescriptions[version] = description
+		date := parts[1]
 
-		filename = ts.dataPath + "/" + filename
-		log.Printf("Initializing database: %s (version %s)", filename, version)
+		filename = path.Join(ts.dataPath, "diffs", filename)
+		log.Printf("Initializing diff: %s (date %s)", filename, date)
 
 		db, err := sql.Open("sqlite3", filename+"?cache=shared&mode=ro")
 		if err != nil {
-			return fmt.Errorf("failed to open database %s: %w", filename, err)
+			fmt.Fprintf(os.Stderr, "failed to open diff database %s: %w", filename, err)
+			continue
 		}
 
 		// Configure connection pool
-		db.SetMaxOpenConns(10)
-		db.SetMaxIdleConns(3)
+		db.SetMaxOpenConns(3)
+		db.SetMaxIdleConns(1)
 		db.SetConnMaxLifetime(24 * time.Hour) // Once a day refresh connections
 
 		// Test the connection
 		if err := db.Ping(); err != nil {
 			db.Close()
-			return fmt.Errorf("failed to ping database %s: %w", filename, err)
+			fmt.Fprintf(os.Stderr, "failed to ping diff database %s: %w", filename, err)
+			continue
 		}
 
 		// Prepare the statement for this database
-		stmt, err := db.Prepare("SELECT data FROM tiles WHERE z = ? AND x = ? AND y = ?")
+		stmt, err := db.Prepare("SELECT data FROM tiles WHERE z = 11 AND x = ? AND y = ?")
 		if err != nil {
 			db.Close()
-			return fmt.Errorf("failed to prepare statement for %s: %w", filename, err)
+			fmt.Fprintf(os.Stderr, "failed to prepare statement for %s: %w", filename, err)
+			continue
 		}
 
-		ts.stmts[version] = stmt
-		ts.dbPool[version] = db
+		ts.diffStmts[date] = stmt
+		ts.diffPool[date] = db
+		ts.diffSortedDates = append(ts.diffSortedDates, date)
 		dbCount++
 	}
+	// Sort diff dates
+	sort.Strings(ts.diffSortedDates)
 
-	if dbCount == 0 {
-		return fmt.Errorf("no database files found (looking for v*.db files)")
+	log.Printf("Initialized %d diff database(s)", dbCount)
+	return nil
+}
+
+// GetDiffList return json list of diff dates
+func (ts *TileServer) GetDiffList() string {
+	json := "["
+	for _, date := range ts.diffSortedDates {
+		json += "\"" + date + "\","
+	}
+	json = json[0 : len(json)-1]
+	json += "]"
+	return json
+}
+
+// serveDiff handles diff tile requests
+func (ts *TileServer) serveDiff(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	date := vars["date"]
+	zStr := vars["z"]
+	xStr := vars["x"]
+	yStr := vars["y"]
+
+	z, x, y, err := ParseTileCoords(zStr, xStr, yStr)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if z != 11 {
+		http.Error(w, "diff tiles only supported for z=11", http.StatusBadRequest)
+		return
 	}
 
-	log.Printf("Initialized %d database(s)", dbCount)
+	tileData, err := ts.GetDiff(x, y, date)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.NotFound(w, r)
+			return
+		}
+		log.Printf("Database query error: %v", err)
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+
+	// Set appropriate headers
+	etag := fmt.Sprintf(`"diff-%s-%s"`, date, GetTileKey(z, x, y))
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.Itoa(len(tileData)))
+	w.Header().Set("Cache-Control", "public, max-age=86400") // Cache for 1 day
+	w.Header().Set("ETag", etag)
+	// Check if client has cached version
+	if match := r.Header.Get("If-None-Match"); match != "" {
+		if match == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
+
+	// Write tile data
+	w.WriteHeader(http.StatusOK)
+	w.Write(tileData)
+}
+
+func (ts *TileServer) GetDiff(x, y int, date string) ([]byte, error) {
+	stmt, exists := ts.diffStmts[date]
+	if !exists {
+		return nil, fmt.Errorf("requested version %s not found", date)
+	}
+
+	var tileData []byte
+	err := stmt.QueryRow(x, y).Scan(&tileData)
+	return tileData, err
+}
+
+// serveDiff handles diff tile requests
+func (ts *TileServer) serveAllDiff(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	zStr := vars["z"]
+	xStr := vars["x"]
+	yStr := vars["y"]
+	from := r.URL.Query().Get("from")
+	to := r.URL.Query().Get("to")
+
+	z, x, y, err := ParseTileCoords(zStr, xStr, yStr)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if z != 11 {
+		http.Error(w, "diff tiles only supported for z=11", http.StatusBadRequest)
+		return
+	}
+
+	// Set appropriate headers
+	etag := fmt.Sprintf(`"alldiff-%s-%s-from%d-to%s"`, GetTileKey(z, x, y), from, to)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Cache-Control", "public, max-age=3600") // Cache for 1 hour
+	w.Header().Set("ETag", etag)
+	// Check if client has cached version
+	if match := r.Header.Get("If-None-Match"); match != "" {
+		if match == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
+
+	// Write tile data
+	w.WriteHeader(http.StatusOK)
+	ts.GetAllDiff(x, y, w, from, to)
+
+}
+
+func (ts *TileServer) GetAllDiff(x, y int, writer http.ResponseWriter, from, to string) error {
+	dateFrom, err := dateToEpochHour(from)
+	if err != nil {
+		dateFrom = 0
+	}
+	dateTo, err := dateToEpochHour(to)
+	if err != nil {
+		dateTo = 2 ^ 32 - 1
+	}
+	for _, dateStr := range ts.diffSortedDates {
+		date, err := dateToEpochHour(dateStr)
+		if err != nil {
+			return err
+		}
+		if date < dateFrom {
+			continue
+		}
+		if date > dateTo {
+			continue
+		}
+
+		stmt, exists := ts.diffStmts[dateStr]
+		if !exists {
+			continue
+		}
+		var tileData []byte
+		err = stmt.QueryRow(x, y).Scan(&tileData)
+		if err == nil {
+			// write date as number of hours since Unix epoch
+			dateBytes := make([]byte, 4)
+			hours, err := dateToEpochHour(dateStr)
+			if err != nil {
+				return err
+			}
+			binary.LittleEndian.PutUint32(dateBytes, hours)
+			_, err = writer.Write(dateBytes)
+			if err != nil {
+				return err
+			}
+
+			// Write size as 4-byte little-endian
+			size := len(tileData)
+			sizeBytes := make([]byte, 4)
+			binary.LittleEndian.PutUint32(sizeBytes, uint32(size))
+			_, err = writer.Write(sizeBytes)
+			if err != nil {
+				return err
+			}
+
+			_, err = writer.Write(tileData)
+			if err != nil {
+				return err
+			}
+		}
+	}
 	return nil
+}
+
+func dateToEpochHour(date string) (uint32, error) {
+	t, err := time.Parse("2006-01-02T15", date)
+	if err != nil {
+		return 0, err
+	}
+	return uint32(t.Unix() / 3600), nil
+
 }
 
 func main() {
@@ -487,8 +678,27 @@ func main() {
 	r := mux.NewRouter()
 
 	// Tile endpoint with version, z, x, y parameters
-	r.HandleFunc("/tiles/{version:v[0-9a-z.]+}/{z:[0-9]+}/{x:[0-9]+}/{y:[0-9]+}.png",
+	r.HandleFunc("/tiles/{version:v[0-9a-z.]+}/{z:[0-9]+}/{x:[0-9]+}/{y:[0-9]+}.zst",
 		tileServer.serveTile).Methods("GET")
+
+	r.HandleFunc("/diff", func(w http.ResponseWriter, r *http.Request) {
+		diffList := tileServer.GetDiffList()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(diffList))
+	}).Methods("GET")
+
+	// Diff endpoint with date, z, x, y parameters
+	// eg: /diff/2025-01-01T01/11/0/0.zst
+	// Note that diff only suport z=11
+	r.HandleFunc("/diff/{date:[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}}/{z:[0-9]+}/{x:[0-9]+}/{y:[0-9]+}.zst",
+		tileServer.serveDiff).Methods("GET")
+
+	// All diffs endpoint with z, x, y parameters
+	// eg: /diff/all/11/0/0.zst
+	// Note that diff only suport z=11
+	r.HandleFunc("/diff/all/{z:[0-9]+}/{x:[0-9]+}/{y:[0-9]+}.zst",
+		tileServer.serveAllDiff).Methods("GET")
 
 	// Root endpoint for index.html
 	r.HandleFunc("/", tileServer.serveIndex).Methods("GET")

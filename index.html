@@ -270,6 +270,7 @@
     </div>
     <div id="screenshot">
       <button id="screenshot-btn" title="Take pixel perfect screenshot">Screenshot</button>
+      <button id="video-btn" title="Take video">Video</button>
     </div>
     <div id="stats">
       <p>Downscale: <span id="downscale-stats">NA</span></p>
@@ -1075,11 +1076,11 @@
 
     async function initWasm() {
       if (wasmModule === null) {
-        const { default: init, init_panic_hook, wasm_screenshot} =
+        const { default: init, init_panic_hook, wasm_screenshot, wasm_video } =
             await import('/assets/wplace_archive_world_map.js');
         await init();
         init_panic_hook();
-        wasmModule = { wasm_screenshot };
+        wasmModule = { wasm_screenshot, wasm_video };
         console.log("WASM module loaded");
       }
     }
@@ -1110,6 +1111,36 @@
         URL.revokeObjectURL(url);
       } catch (e) {
         alert(`Failed to create screenshot: ${e}`);
+        console.error(e);
+      }
+    };
+
+    document.getElementById("video-btn").onclick=async() => {
+      try {
+        await initWasm();
+        const rect = map.getContainer().getBoundingClientRect();
+        const topLeftLngLat = map.unproject([rect.left, rect.top]);
+        const botRightLngLat = map.unproject([rect.right, rect.bottom]);
+        const x1 = BigInt(lng2tileX(topLeftLngLat.lng, 11));
+        const y1 = BigInt(lat2tileY(topLeftLngLat.lat, 11));
+        const x2 = BigInt(lng2tileX(botRightLngLat.lng, 11));
+        const y2 = BigInt(lat2tileY(botRightLngLat.lat, 11));
+        if ((x2-x1 > 19) || (y2-y1 > 19)) {
+          throw new Error("Image would be too big. Zoom in and try again.")
+        }
+        const data = await wasmModule.wasm_video("diff", x1, y1, x2, y2);
+        const tar = new Blob([data], { type: 'image/png' });
+        console.log(tar);
+        const url = URL.createObjectURL(tar);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `all-${x1}-${y1}.png`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      } catch (e) {
+        alert(`Failed to make video: ${e}`);
         console.error(e);
       }
     };

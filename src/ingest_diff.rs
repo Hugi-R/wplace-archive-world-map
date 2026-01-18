@@ -105,11 +105,15 @@ impl Metrics {
 }
 
 /// convert a wplacetools diff to this project diff
-fn convert_diff3(diff: &[u8]) -> Vec<u8> {
+fn convert_wplacetools_diff(diff: &[u8]) -> Vec<u8> {
     let mut res = vec![0u8; diff.len()];
     for i in 0..diff.len() {
-        let diff_index = diff[i] & wplacetools::PALETTE_INDEX_MASK;
-        res[i] = palette::WPLACETOOLS_PALETTE_CONVERSION[diff_index as usize];
+        if diff[i] & wplacetools::MUTATION_MASK != 0 {
+            let diff_index = diff[i] & wplacetools::PALETTE_INDEX_MASK;
+            res[i] = palette::WPLACETOOLS_PALETTE_CONVERSION[diff_index as usize];
+        } else {
+            res[i] = palette::DIFF_NO_CHANGE;
+        }
     }
     res
 }
@@ -131,7 +135,7 @@ fn apply_to_db(db: &mut TileDB, diff: PalettedImage, x: u16, y: u16, crc32: u32)
 
 fn apply_entry<R: io::Seek + io::Read>(db: &mut TileDB, diff_file: &mut wplacetools::diff::DiffFile<R>, entry: IndexEntry) -> anyhow::Result<()> {
     let chunk = diff_file.read_chunk(&entry)?;
-    let converted = convert_diff3(&chunk);
+    let converted = convert_wplacetools_diff(&chunk);
     let img = PalettedImage { width: wplacetools::CHUNK_WIDTH, height: wplacetools::CHUNK_WIDTH, indices: converted };
     apply_to_db(db, img, entry.x, entry.y, entry.checksum)?;
     Ok(())
@@ -252,7 +256,7 @@ fn convert_filename(path: &Path) -> anyhow::Result<String> {
             Ok(dt) => {
                 let (x_weeks, y_hours) = version_xy(epoch, dt);
                 let out = format!(
-                    "v{}.{}_{:04}-{:02}-{:02}T{:02}.db",
+                    "diff_v{}.{}_{:04}-{:02}-{:02}T{:02}.db",
                     x_weeks,
                     format!("{:03}", y_hours),
                     dt.year(),
