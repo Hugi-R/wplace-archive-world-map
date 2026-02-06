@@ -95,37 +95,6 @@ pub fn init_img(x1: i64, y1: i64, x2: i64, y2: i64, background: u8) -> PalettedI
     PalettedImage { width: width as usize, height: height as usize, indices: vec![background; (width*height) as usize] }
 }
 
-#[cfg(feature = "native")]
-pub fn native_screenshot(base_url: &str, version: &str, x1: i64, y1: i64, x2: i64, y2: i64) -> Result<PalettedImage, Box<dyn Error>> {
-    use crate::palette::TRANSPARENT;
-
-    let mut target = init_img(x1, y1, x2, y2, TRANSPARENT);
-
-    let config = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(5))).http_status_as_error(false).build();
-    let agent: ureq::Agent = config.into();
-
-    for y in y1..(y2+1) {
-        for x in x1..(x2+1) {
-            let url = format!("{}/{}/11/{}/{}.png", base_url, version, x, y);
-            let mut res = agent.get(url).call()?;
-            let img = match res.status() {
-                ureq::http::StatusCode::OK => {
-                    let data = res.body_mut().read_to_vec()?;
-                    image::compressed_bytes_to_paletted(&data)?
-                },
-                ureq::http::StatusCode::NOT_FOUND => {
-                    PalettedImage { width: 1000, height: 1000, indices: vec![0u8; 1000*1000] }
-                },
-                s => return Err(format!("Unexpected status code: {}", s).into())
-            };
-            assert!(img.height == 1000 && img.width == 1000);
-            copy_img(&img, &mut target, x-x1, y-y1);
-        }
-    }
-
-    return Ok(target);
-}
-
 pub fn apng_from_history(history: HashMap<(u16, u16), TileHistory>, frame_delay_ms: u16) -> anyhow::Result<Vec<u8>> {
     assert!(history.len() >= 1, "need at least one tile history to create APNG");
     let mut date_set: HashSet<u32> = HashSet::new();

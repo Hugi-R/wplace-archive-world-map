@@ -7,28 +7,30 @@ self.onmessage = async (event) => {
 
     if (type === 'init') {
         // Load WASM module once
-        const { default: init, compressed_bytes_to_png_blob, init_panic_hook, compressed_4to1, diff_compressed_bytes_to_png_blob, diff_compressed_4to1 } =
-            await import('./wplace_archive_world_map.js');
+        const { default: init, init_panic_hook, get_image} =
+            await import('./wplacearchive.js');
         await init();
         init_panic_hook();
-        wasmModule = { compressed_bytes_to_png_blob, compressed_4to1, diff_compressed_bytes_to_png_blob, diff_compressed_4to1 };
+        wasmModule = { get_image };
         self.postMessage({ type: 'ready' });
         return;
     }
 
     if (type === 'decompress' && wasmModule) {
-        const { taskId, buffers } = data;
-        console.log(`Worker received decompress task ${taskId}`);
+        console.log(data);
+        const { taskId, version, buffers } = data;
+        console.log(`Worker received decompress task ${taskId} for version ${version}`);
         try {
             const uint8Array = new Uint8Array(buffers[0]);
             // compressed_bytes_to_png_blob returns a Uint8Array (PNG bytes)
-            const pngBytes = wasmModule.compressed_bytes_to_png_blob(uint8Array);
+            const pngBytes = wasmModule.get_image(version, uint8Array);
 
             // Copy the Uint8Array to create a new ArrayBuffer we can transfer
             const arrayBuffer = new Uint8Array(pngBytes).buffer;
             self.postMessage({
                 type: 'decompress-result',
                 taskId,
+                version,
                 arrayBuffer,
                 error: null
             }, [arrayBuffer]); // Transfer ownership
@@ -37,9 +39,9 @@ self.onmessage = async (event) => {
             self.postMessage({
                 type: 'decompress-result',
                 taskId,
-                error: error.message
+                error: error
             });
-            console.error(`Worker failed decompress task ${taskId}: ${error.message}`);
+            console.error(`Worker failed decompress task ${taskId}: ${error}`);
         }
     }
 

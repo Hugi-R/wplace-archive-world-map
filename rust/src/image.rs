@@ -25,7 +25,7 @@ impl Clone for PalettedImage {
 impl PalettedImage {
     pub fn to_png(&self) -> anyhow::Result<Vec<u8>> {
         let mut png: Vec<u8> = Vec::new();
-        paletted_to_png(self, &mut png)?;
+        paletted_to_png(self, &mut png, true)?;
         Ok(png)
     }
 
@@ -120,7 +120,7 @@ pub fn compressed_bytes_to_paletted(compressed: &[u8]) -> anyhow::Result<Palette
 }
 
 /// Convert a paletted image back to a PNG.
-pub fn paletted_to_png<W: Write>(paletted: &PalettedImage, out: W) -> anyhow::Result<()> {
+pub fn paletted_to_png<W: Write>(paletted: &PalettedImage, out: W, ignore_diff: bool) -> anyhow::Result<()> {
     {
         let mut encoder = Encoder::new(out, paletted.width as u32, paletted.height as u32);
         encoder.set_color(ColorType::Indexed);
@@ -130,7 +130,14 @@ pub fn paletted_to_png<W: Write>(paletted: &PalettedImage, out: W) -> anyhow::Re
         // Build palette (RGB triples) and tRNS (alpha table)
         let mut palette_bytes = Vec::with_capacity(256 * 3);
         let mut trns = Vec::with_capacity(256);
-        for rgba in PALETTE.iter() {
+        let palette = if ignore_diff {
+            let mut pal = PALETTE.clone();
+            pal[crate::palette::DIFF_NO_CHANGE as usize] = [0,0,0,0];
+            pal
+        } else {
+            PALETTE.clone()
+        };
+        for rgba in palette.iter() {
             palette_bytes.push(rgba[0]);
             palette_bytes.push(rgba[1]);
             palette_bytes.push(rgba[2]);
@@ -176,7 +183,7 @@ pub fn paletted_to_apng<W: Write>(paletted: Vec<PalettedImage>, out: W, frame_de
 /// Convert a paletted image back to a PNG file.
 pub fn paletted_to_png_file(paletted: &PalettedImage, output_path: &Path) -> Result<(), Box<dyn Error>> {
     let mut of = File::create(output_path)?;
-    paletted_to_png(paletted,  of)?;
+    paletted_to_png(paletted,  of, false)?;
     Ok(())
 }
 

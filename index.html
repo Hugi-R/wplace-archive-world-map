@@ -323,19 +323,15 @@
       const decompressNetworkPercentiles = computePercentiles(metricsDecompressNetwork);
       if (downscalePercentiles) {
         document.getElementById("downscale-stats").textContent = `P10=${downscalePercentiles.p10.toFixed(2)}, P50=${downscalePercentiles.p50.toFixed(2)}, P90=${downscalePercentiles.p90.toFixed(2)}`;
-        console.log(`Downscale times (ms): P10=${downscalePercentiles.p10.toFixed(2)}, P50=${downscalePercentiles.p50.toFixed(2)}, P90=${downscalePercentiles.p90.toFixed(2)}`);
       }
       if (decompressPercentiles) {
         document.getElementById("decompress-stats").textContent = `P10=${decompressPercentiles.p10.toFixed(2)}, P50=${decompressPercentiles.p50.toFixed(2)}, P90=${decompressPercentiles.p90.toFixed(2)}`;
-        console.log(`Decompress times (ms): P10=${decompressPercentiles.p10.toFixed(2)}, P50=${decompressPercentiles.p50.toFixed(2)}, P90=${decompressPercentiles.p90.toFixed(2)}`);
       }
       if (decompressProcessPercentiles) {
         document.getElementById("decompress-process-stats").textContent = `P10=${decompressProcessPercentiles.p10.toFixed(2)}, P50=${decompressProcessPercentiles.p50.toFixed(2)}, P90=${decompressProcessPercentiles.p90.toFixed(2)}`;
-        console.log(`Decompress times (ms): P10=${decompressProcessPercentiles.p10.toFixed(2)}, P50=${decompressProcessPercentiles.p50.toFixed(2)}, P90=${decompressProcessPercentiles.p90.toFixed(2)}`);
       }
       if (decompressNetworkPercentiles) {
         document.getElementById("decompress-network-stats").textContent = `P10=${decompressNetworkPercentiles.p10.toFixed(2)}, P50=${decompressNetworkPercentiles.p50.toFixed(2)}, P90=${decompressNetworkPercentiles.p90.toFixed(2)}`;
-        console.log(`Decompress times (ms): P10=${decompressNetworkPercentiles.p10.toFixed(2)}, P50=${decompressNetworkPercentiles.p50.toFixed(2)}, P90=${decompressNetworkPercentiles.p90.toFixed(2)}`);
       }
     }, 1000);
 
@@ -358,10 +354,10 @@
         }
       }
 
-      async decompress(buffer) {
+      async decompress(version, buffer) {
         return new Promise((resolve, reject) => {
           const taskId = this.taskIdCounter++;
-          const task = { type: 'decompress', taskId, buffers: [buffer], resolve, reject };
+          const task = { type: 'decompress', taskId, version, buffers: [buffer], resolve, reject };
           
           const availableWorker = this.workers.find(w => !w.busy && w.ready);
           if (availableWorker) {
@@ -418,7 +414,7 @@
         worker.busy = true;
         this.activeTasks.set(task.taskId, task);
         worker.postMessage(
-          { type: task.type, data: { taskId: task.taskId, buffers: task.buffers } },
+          { type: task.type, data: { taskId: task.taskId, version: task.version, buffers: task.buffers } },
           task.buffers // Transfer the buffers for efficiency
         );
       }
@@ -562,90 +558,13 @@
       };
     }
 
-    async function emptyArrayOnError(resp) {
-      if (resp.status == 200) {
-        return await resp.arrayBuffer();
-      }
-      return new ArrayBuffer(0)      
-    }
-
-    async function getTilez10(vBase, z, x, y) {
+    async function getTile(version, z, x, y) {
       const perfStart = performance.now();
-
-      // Compte z=10 on client (not stored on server)
-      let z2 = 11;
-      let x2 = x * 2;
-      let y2 = y * 2;
-      const [t1, t2, t3, t4] = await Promise.all([
-        fetch(`/tiles/${vBase}/${z2}/${x2}/${y2}.png`),
-        fetch(`/tiles/${vBase}/${z2}/${x2+1}/${y2}.png`),
-        fetch(`/tiles/${vBase}/${z2}/${x2}/${y2+1}.png`),
-        fetch(`/tiles/${vBase}/${z2}/${x2+1}/${y2+1}.png`)
-      ]);
-      if (t1.status !== 200 && t2.status !== 200 && t3.status !== 200 && t4.status !== 200) {
-        throw new Error("empty tile");
-      }
-      console.log(`Merging tiles for ${vBase} z${z} x${x} y${y}`);
-      const [b1, b2, b3, b4] = await Promise.all([
-        emptyArrayOnError(t1),
-        emptyArrayOnError(t2),
-        emptyArrayOnError(t3),
-        emptyArrayOnError(t4),
-      ]);
-      const img = await tileWorkerPool.downscale_4to1(b1, b2, b3, b4);
-      
-      const perfEnd = performance.now();
-      console.log(`z${z} x${x} y${y} took ${(perfEnd - perfStart).toFixed(2)} ms`);
-      metricsDownscale.push(perfEnd - perfStart);
-
-      return img
-    }
-
-    async function getTilez10Diff(vBase, vDiff, z, x, y) {
-      const perfStart = performance.now();
-
-      // Compte z=10 on client (not stored on server)
-      let z2 = 11;
-      let x2 = x * 2;
-      let y2 = y * 2;
-      const [b1, b2, b3, b4, d1, d2, d3, d4] = await Promise.all([
-        fetch(`/tiles/${vBase}/${z2}/${x2}/${y2}.png`),
-        fetch(`/tiles/${vBase}/${z2}/${x2+1}/${y2}.png`),
-        fetch(`/tiles/${vBase}/${z2}/${x2}/${y2+1}.png`),
-        fetch(`/tiles/${vBase}/${z2}/${x2+1}/${y2+1}.png`),
-        fetch(`/tiles/${vDiff}/${z2}/${x2}/${y2}.png`),
-        fetch(`/tiles/${vDiff}/${z2}/${x2+1}/${y2}.png`),
-        fetch(`/tiles/${vDiff}/${z2}/${x2}/${y2+1}.png`),
-        fetch(`/tiles/${vDiff}/${z2}/${x2+1}/${y2+1}.png`)
-      ]);
-      if ( b1.status !== 200 && b2.status !== 200 && b3.status !== 200 && b4.status !== 200 && d1.status !== 200 && d2.status !== 200 && d3.status !== 200 && d4.status !== 200) {
-        throw new Error("empty tile");
-      }
-      console.log(`Merging tiles for ${vBase} z${z} x${x} y${y}`);
-      const [bb1, bb2, bb3, bb4, bd1, bd2, bd3, bd4] = await Promise.all([
-        emptyArrayOnError(b1),
-        emptyArrayOnError(b2),
-        emptyArrayOnError(b3),
-        emptyArrayOnError(b4),
-        emptyArrayOnError(d1),
-        emptyArrayOnError(d2),
-        emptyArrayOnError(d3),
-        emptyArrayOnError(d4),
-      ]);
-      const img = await tileWorkerPool.diff_downscale_4to1(bb1, bb2, bb3, bb4, bd1, bd2, bd3, bd4);
-      
-      const perfEnd = performance.now();
-      console.log(`z${z} x${x} y${y} took ${(perfEnd - perfStart).toFixed(2)} ms`);
-      metricsDownscale.push(perfEnd - perfStart);
-
-      return img;
-    }
-
-    async function getTile(vBase, z, x, y) {
-      const perfStart = performance.now();
+      const versionFloat = parseFloat(version);
+      const versionInt = Math.floor(versionFloat);
 
       const [tile] = await Promise.all([
-        fetch(`/tiles/${vBase}/${z}/${x}/${y}.png`)
+        fetch(`/tiles/${versionInt}/${z}/${x}/${y}.zst`)
       ]);
       if (tile.status !== 200) {
         throw new Error("empty tile");
@@ -655,36 +574,8 @@
       const perfNetworkEnd = performance.now();
       metricsDecompressNetwork.push(perfNetworkEnd - perfStart);
 
-      const img = await tileWorkerPool.decompress(buffer);
+      const img = await tileWorkerPool.decompress(version, buffer);
       console.log("BBB", img)
-
-      const perfEnd = performance.now();
-      console.log(`z${z} x${x} y${y} took ${(perfEnd - perfNetworkEnd).toFixed(2)} ms`);
-      metricsDecompressProcess.push(perfEnd - perfNetworkEnd);
-      metricsDecompress.push(perfEnd - perfStart);
-
-      return img
-    }
-
-    async function getTileDiff(vBase, vDiff, z, x, y) {
-      const perfStart = performance.now();
-
-      const [base, diff] = await Promise.all([
-        fetch(`/tiles/${vBase}/${z}/${x}/${y}.png`),
-        fetch(`/tiles/${vDiff}/${z}/${x}/${y}.png`)
-      ]);
-      if (base.status !== 200 && diff.status !== 200) {
-        throw new Error("empty tile");
-      }
-      const [baseBuffer, diffBuffer] = await Promise.all([
-        emptyArrayOnError(base),
-        emptyArrayOnError(diff),
-      ]);
-
-      const perfNetworkEnd = performance.now();
-      metricsDecompressNetwork.push(perfNetworkEnd - perfStart);
-
-      const img = await tileWorkerPool.diff_decompress(baseBuffer, diffBuffer);
 
       const perfEnd = performance.now();
       console.log(`z${z} x${x} y${y} took ${(perfEnd - perfNetworkEnd).toFixed(2)} ms`);
@@ -697,37 +588,26 @@
     // Register custom protocol
     maplibregl.addProtocol('merged', async (params, abortControler) => {
       const { vBase, vDiff, z, x, y } = parseTileUrl(params.url);
-      
+
       const cache = typeof caches !== 'undefined' ? await caches.open("merged-tiles") : null;
       const cacheKey = `tile-${vDiff ? vDiff : vBase}-${z}-${x}-${y}`;
 
-      // if (cache) {
-      //   // Try to get from cache first
-      //   const cachedResponse = await cache.match(cacheKey);
-      //   if (cachedResponse) {
-      //     const buffer = await cachedResponse.arrayBuffer();
-      //     return {data: buffer};
-      //   }
-      // }
-
-      if (z == 10) {
-        if (vDiff) {
-          const img = await getTilez10Diff(vBase, vDiff, z, x, y);
-          return {data: img};
-        } else {
-          const img = await getTilez10(vBase, z, x, y);
-          return {data: img};
-        }
-      } else {
-        // Direct fetch for other zoom levels
-        if (vDiff) {
-          const img = await getTileDiff(vBase, vDiff, z, x, y);
-          return {data: img};
-        } else {
-          const img = await getTile(vBase, z, x, y);
-          return {data: img};
+      if (cache) {
+        // Try to get from cache first
+        const cachedResponse = await cache.match(cacheKey);
+        if (cachedResponse) {
+          const buffer = await cachedResponse.arrayBuffer();
+          return {data: buffer};
         }
       }
+
+      const img = await getTile(vDiff, z, x, y);
+      if (cache) {
+        // Cache the response for future requests
+        const response = new Response(img);
+        await cache.put(cacheKey, response);
+      }
+      return {data: img};
     });
 
       // --- URL param helpers: read and update lat/lng/zoom ---
@@ -1077,7 +957,7 @@
     async function initWasm() {
       if (wasmModule === null) {
         const { default: init, init_panic_hook, wasm_screenshot, wasm_video } =
-            await import('/assets/wplace_archive_world_map.js');
+            await import('/assets/wplacearchive.js');
         await init();
         init_panic_hook();
         wasmModule = { wasm_screenshot, wasm_video };
@@ -1095,7 +975,7 @@
         const y1 = BigInt(lat2tileY(topLeftLngLat.lat, 11));
         const x2 = BigInt(lng2tileX(botRightLngLat.lng, 11));
         const y2 = BigInt(lat2tileY(botRightLngLat.lat, 11));
-        if ((x2-x1 > 19) || (y2-y1 > 19)) {
+        if (((x2-x1) * (y2-y1)) > 400) {
           throw new Error("Image would be too big. Zoom in and try again.")
         }
         const data = await wasmModule.wasm_screenshot("tiles", wplaceVersion, x1, y1, x2, y2);
@@ -1125,8 +1005,8 @@
         const y1 = BigInt(lat2tileY(topLeftLngLat.lat, 11));
         const x2 = BigInt(lng2tileX(botRightLngLat.lng, 11));
         const y2 = BigInt(lat2tileY(botRightLngLat.lat, 11));
-        if ((x2-x1 > 19) || (y2-y1 > 19)) {
-          throw new Error("Image would be too big. Zoom in and try again.")
+        if (((x2-x1) * (y2-y1)) > 16) {
+          throw new Error("Animated PNG would be too big. Zoom in and try again.")
         }
         const data = await wasmModule.wasm_video("diff", x1, y1, x2, y2);
         const tar = new Blob([data], { type: 'image/png' });

@@ -1,5 +1,5 @@
 [package]
-name = "wplace-archive-world-map"
+name = "wplacearchive"
 version = "0.1.0"
 edition = "2024"
 
@@ -14,7 +14,6 @@ flate2 = "1.0"
 wasm-bindgen = { version = "0.2", optional = true }
 console_error_panic_hook = { version = "0.1.7", optional = true }
 rayon = "1.11.0"
-ureq = { version = "3.1.4", optional = true }
 wasm-bindgen-futures = { version = "0.4.56", optional = true }
 js-sys = { version = "0.3.83", optional = true }
 web-sys = { version = "0.3.83", optional = true, features = ['Headers', 'Request', 'RequestInit', 'RequestMode', 'Response', 'Window'] }
@@ -24,7 +23,7 @@ chrono = "0.4.42"
 
 [features]
 default = ["full"]
-native = ["rusqlite", "ureq"]
+native = ["rusqlite"]
 wasm = ["wasm-bindgen", "console_error_panic_hook", "wasm-bindgen-futures", "js-sys", "web-sys"]
 # Full build with all features (CLI + library)
 full = ["native", "wasm"]

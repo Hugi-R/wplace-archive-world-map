@@ -14,6 +14,7 @@ mod reader_targz;
 mod merge;
 mod screenshot;
 mod ingest_diff;
+mod crunch;
 
 fn usage(program: &str) {
     eprintln!("Usage: {} <command> [args]", program);
@@ -208,11 +209,6 @@ fn cmd_undiff(base: &str, diff: &str, out: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn cmd_screenshot(out: &str, base_url: &str, version: &str, x1: i64, y1: i64, x2: i64, y2: i64) -> Result<(), Box<dyn Error>> {
-    let img = screenshot::native_screenshot(base_url, version, x1, y1, x2, y2)?;
-    image::paletted_to_png_file(&img, &Path::new(out))
-}
-
 fn cmd_zst_bench(data_db: &str) -> anyhow::Result<()> {
     let mut db = TileDB::new(Path::new(data_db), true)?;
     
@@ -296,6 +292,14 @@ fn cmd_apgn(in_folder: &str, out_file: &str) -> anyhow::Result<()> {
         }
     }
     image::paletted_to_apng(frames, std::fs::File::create(out_file)?, 200)
+}
+
+fn cmd_crunchday(in_folder: &str, out_folder: &str, work_folder: &str, workers: usize) -> anyhow::Result<()> {
+    crunch::crunch_day(in_folder, out_folder, work_folder, workers)
+}
+
+fn cmd_crunchweek(in_folder: &str, out_folder: &str, work_folder: &str, workers: usize) -> anyhow::Result<()> {
+    crunch::crunch_week(in_folder, out_folder, work_folder, workers)
 }
 
 fn main() {
@@ -402,20 +406,6 @@ fn main() {
                 std::process::exit(10);
             }
         }
-        "screenshot" => {
-            if args.len() < 8 { usage(&args[0]); std::process::exit(2); }
-            let out = &args[2];
-            let url= &args[3];
-            let version = &args[4];
-            let x1 = args[5].parse::<i64>().unwrap();
-            let y1 = args[6].parse::<i64>().unwrap();
-            let x2 = args[7].parse::<i64>().unwrap();
-            let y2 = args[8].parse::<i64>().unwrap();
-            if let Err(e) = cmd_screenshot(out, url, version, x1, y1, x2, y2) {
-                eprintln!("screensot failed: {}", e);
-                std::process::exit(11);
-            }
-        }
         "diffconvert" => {
             if args.len() < 3 { usage(&args[0]); std::process::exit(2); }
             let out = &args[2];
@@ -437,6 +427,30 @@ fn main() {
             let in_folder = &args[2];
             let out_file = &args[3];
             cmd_apgn(in_folder, out_file).unwrap();
+        }
+        "crunchday" => {
+            if args.len() < 5 { usage(&args[0]); std::process::exit(2); }
+            let in_folder = &args[2];
+            let out_folder = &args[3];
+            let work_folder = &args[4];
+            let workers = if args.len() > 5 {
+                args[5].parse::<usize>().unwrap_or(10)
+            } else {
+                10
+            };
+            cmd_crunchday(in_folder, out_folder, work_folder, workers).unwrap();
+        }
+        "crunchweek" => {
+            if args.len() < 5 { usage(&args[0]); std::process::exit(2); }
+            let in_folder = &args[2];
+            let out_folder = &args[3];
+            let work_folder = &args[4];
+            let workers = if args.len() > 5 {
+                args[5].parse::<usize>().unwrap_or(10)
+            } else {
+                10
+            };
+            cmd_crunchweek(in_folder, out_folder, work_folder, workers).unwrap();
         }
         _ => {
             usage(&args[0]);

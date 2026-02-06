@@ -49,12 +49,6 @@ impl TileDB {
     }
 
     fn init_write(&mut self) -> SqlResult<()> {
-        // Enable WAL mode for better concurrency
-        self.conn.execute_batch("PRAGMA journal_mode = WAL")?;
-
-        // Set WAL journal size limit to 500MB
-        self.conn
-            .execute_batch("PRAGMA journal_size_limit = 524288000")?;
 
         // Ensure schema
         self.conn.execute_batch(
@@ -101,7 +95,23 @@ impl TileDB {
         self.pending_tiles.push((z, x, y, data.to_vec(), crc32));
         
         if self.pending_tiles.len() >= BATCH_SIZE {
-            self.flush_pending_tiles()?;
+            // Retry up to 5 times on failure
+            for attempt in 0..5 {
+                match self.flush_pending_tiles() {
+                    Ok(_) => break,
+                    Err(e) => {
+                        eprintln!(
+                            "Failed to flush pending tiles (attempt {}/{}): {}",
+                            attempt + 1, 5, e
+                        );
+                        if attempt < 4 {
+                            std::thread::sleep(Duration::from_millis(5000));
+                        } else {
+                            return Err(e);
+                        }
+                    }
+                }
+            }
         }
         
         Ok(())
@@ -194,17 +204,6 @@ impl TileDB {
     pub fn close(mut self) -> SqlResult<()> {
         // Flush any pending tiles before closing
         self.flush_pending_tiles()?;
-        
-        if !self.read_only {
-            // Checkpoint WAL
-            self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
-
-            // Close and reopen to disable WAL
-            drop(self.conn);
-            let conn = Connection::open(&self.db_path)?;
-            conn.execute_batch("PRAGMA journal_mode = DELETE")?;
-            eprintln!("successfully reverted WAL after reopen");
-        }
         Ok(())
     }
 }

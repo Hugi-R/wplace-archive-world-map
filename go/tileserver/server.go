@@ -2,13 +2,9 @@
 package main
 
 import (
-	"bytes"
 	"database/sql"
 	"encoding/binary"
 	"fmt"
-	"image"
-	"image/color"
-	"image/png"
 	"io"
 	"log"
 	"net/http"
@@ -23,6 +19,291 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+type DatabaseManager struct {
+	dbPool   map[string]*sql.DB
+	stmts    map[string]*sql.Stmt
+	mappings map[uint32][]string
+	days     []float32
+}
+
+func NewDatabaseManager() *DatabaseManager {
+	return &DatabaseManager{
+		dbPool:   make(map[string]*sql.DB),
+		stmts:    make(map[string]*sql.Stmt),
+		mappings: make(map[uint32][]string),
+	}
+}
+
+// initializeWeekDatabases scans for database files and initializes connections
+func (dbm *DatabaseManager) initializeWeekDatabases(folderPath string) error {
+	files, err := os.ReadDir(folderPath)
+	if err != nil {
+		return fmt.Errorf("failed to read directory: %w", err)
+	}
+
+	dbCount := 0
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+
+		filename := file.Name()
+		if !strings.HasPrefix(filename, "w") || !strings.HasSuffix(filename, ".db") {
+			continue
+		}
+
+		// Extract version from filename (w1_*.db -> 1)
+		name := strings.TrimPrefix(strings.TrimSuffix(filename, ".db"), "w")
+		parts := strings.Split(name, "_")
+		var version string
+		if len(parts) < 2 {
+			// invalid filename
+			continue
+		} else {
+			version = parts[0]
+		}
+		versionUint, err := strconv.ParseUint(version, 10, 32)
+		if err != nil {
+			log.Printf("Invalid week database filename: %s", filename)
+			continue
+		}
+
+		filename = folderPath + filename
+		log.Printf("Initializing database: %s (version %s)", filename, version)
+
+		db, err := sql.Open("sqlite3", filename+"?cache=shared&mode=ro")
+		if err != nil {
+			return fmt.Errorf("failed to open database %s: %w", filename, err)
+		}
+
+		// Configure connection pool
+		db.SetMaxOpenConns(10)
+		db.SetMaxIdleConns(3)
+		db.SetConnMaxLifetime(24 * time.Hour) // Once a day refresh connections
+
+		// Test the connection
+		if err := db.Ping(); err != nil {
+			db.Close()
+			return fmt.Errorf("failed to ping database %s: %w", filename, err)
+		}
+
+		// Prepare the statement for this database
+		stmt, err := db.Prepare("SELECT data FROM tiles WHERE z = ? AND x = ? AND y = ?")
+		if err != nil {
+			db.Close()
+			return fmt.Errorf("failed to prepare statement for %s: %w", filename, err)
+		}
+
+		dbm.mappings[uint32(versionUint+1)] = append(dbm.mappings[uint32(versionUint+1)], version)
+		dbm.stmts[version] = stmt
+		dbm.dbPool[version] = db
+		dbCount++
+	}
+
+	if dbCount == 0 {
+		return fmt.Errorf("no week database files found (looking for w*.db files)")
+	}
+
+	log.Printf("Initialized %d database(s)", dbCount)
+	return nil
+}
+
+// initializeWeekDatabases scans for database files and initializes connections
+func (dbm *DatabaseManager) initializeDayDatabases(folderPath string) error {
+	files, err := os.ReadDir(folderPath)
+	if err != nil {
+		return fmt.Errorf("failed to read directory: %w", err)
+	}
+
+	dbCount := 0
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+
+		filename := file.Name()
+		if !strings.HasPrefix(filename, "day_diff_v") || !strings.HasSuffix(filename, ".db") {
+			continue
+		}
+
+		// Extract version from filename (day_diff_v1_*.db -> 1)
+		name := strings.TrimPrefix(strings.TrimSuffix(filename, ".db"), "day_diff_v")
+		parts := strings.Split(name, "_")
+		var version string
+		if len(parts) < 2 {
+			// invalid filename
+			continue
+		} else {
+			version = parts[0]
+		}
+		versionFloat, err := strconv.ParseFloat(version, 32)
+		if err != nil {
+			log.Printf("Invalid day database filename: %s", filename)
+			continue
+		}
+
+		filename = folderPath + filename
+		log.Printf("Initializing database: %s (version %s)", filename, version)
+
+		db, err := sql.Open("sqlite3", filename+"?cache=shared&mode=ro")
+		if err != nil {
+			return fmt.Errorf("failed to open database %s: %w", filename, err)
+		}
+
+		// Configure connection pool
+		db.SetMaxOpenConns(10)
+		db.SetMaxIdleConns(3)
+		db.SetConnMaxLifetime(24 * time.Hour) // Once a day refresh connections
+
+		// Test the connection
+		if err := db.Ping(); err != nil {
+			db.Close()
+			return fmt.Errorf("failed to ping database %s: %w", filename, err)
+		}
+
+		// Prepare the statement for this database
+		stmt, err := db.Prepare("SELECT data FROM tiles WHERE z = ? AND x = ? AND y = ?")
+		if err != nil {
+			db.Close()
+			return fmt.Errorf("failed to prepare statement for %s: %w", filename, err)
+		}
+
+		versionUint := uint32(versionFloat)
+		_, ok := dbm.mappings[versionUint]
+		if !ok {
+			log.Printf("Day database %s has no matching week database", filename)
+			continue
+		}
+		dbm.mappings[versionUint] = append(dbm.mappings[versionUint], version)
+		dbm.stmts[version] = stmt
+		dbm.dbPool[version] = db
+		dbm.days = append(dbm.days, float32(versionFloat))
+		dbCount++
+	}
+
+	if dbCount == 0 {
+		return fmt.Errorf("no day database files found (looking for day_diff_*.db files)")
+	}
+
+	log.Printf("Initialized %d database(s)", dbCount)
+	return nil
+}
+
+func (dbm *DatabaseManager) InitializeDatabases(folderPath string) error {
+	err := dbm.initializeWeekDatabases(folderPath + "/weeks/")
+	if err != nil {
+		return err
+	}
+	err = dbm.initializeDayDatabases(folderPath + "/days/")
+	if err != nil {
+		return err
+	}
+
+	// Sort mappings
+	for key, versions := range dbm.mappings {
+		sort.Slice(versions, func(i, j int) bool {
+			vi := versions[i]
+			vj := versions[j]
+			// Try float comparison, fallback to string
+			fi, erri := strconv.ParseFloat(vi, 64)
+			fj, errj := strconv.ParseFloat(vj, 64)
+			if erri == nil && errj == nil {
+				return fi < fj
+			}
+			return vi < vj
+		})
+		dbm.mappings[key] = versions
+	}
+
+	// Sort days
+	sort.Slice(dbm.days, func(i, j int) bool {
+		return dbm.days[i] < dbm.days[j]
+	})
+
+	return nil
+}
+
+func (dbm *DatabaseManager) GetAllDiff(z, x, y int, version uint32, writer http.ResponseWriter) error {
+	versions, exists := dbm.mappings[version]
+	if !exists {
+		return fmt.Errorf("requested version %d not found", version)
+	}
+	for _, version := range versions {
+		versionFloat, err := strconv.ParseFloat(version, 32)
+		if err != nil {
+			return err
+		}
+		versionUint := uint32(versionFloat * 1000)
+		stmt, exists := dbm.stmts[version]
+		if !exists {
+			continue
+		}
+		var tileData []byte
+		err = stmt.QueryRow(z, x, y).Scan(&tileData)
+		if err == nil {
+			// write date as number of hours since Unix epoch
+			dateBytes := make([]byte, 4)
+			binary.LittleEndian.PutUint32(dateBytes, versionUint)
+			_, err = writer.Write(dateBytes)
+			if err != nil {
+				return err
+			}
+
+			// Write size as 4-byte little-endian
+			size := len(tileData)
+			sizeBytes := make([]byte, 4)
+			binary.LittleEndian.PutUint32(sizeBytes, uint32(size))
+			_, err = writer.Write(sizeBytes)
+			if err != nil {
+				return err
+			}
+
+			_, err = writer.Write(tileData)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// Close closes all database connections
+func (dbm *DatabaseManager) Close() error {
+	var lastErr error
+
+	// Close prepared statements
+	for version, stmt := range dbm.stmts {
+		if err := stmt.Close(); err != nil {
+			log.Printf("Error closing statement for version %s: %v", version, err)
+			lastErr = err
+		}
+	}
+
+	// Close database connections
+	for version, db := range dbm.dbPool {
+		if err := db.Close(); err != nil {
+			log.Printf("Error closing database for version %s: %v", version, err)
+			lastErr = err
+		}
+	}
+
+	return lastErr
+}
+
+func dateFromVersion(version float32) string {
+	// Convert version float to date string (e.g., 1.001 -> 2025-01-01T01)
+	// where 1 is the number of weeks since a base date (e.g., 2025-01-01)
+	// and .001 is the number of hours into that week.
+	baseDate := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	major := int(version)
+	minor := int((version - float32(major)) * 1000)
+	daysToAdd := major* 7
+	hoursToAdd := minor
+
+	targetDate := baseDate.AddDate(0, 0, daysToAdd).Add(time.Duration(hoursToAdd) * time.Hour)
+	return targetDate.Format("2006-01-02T15")
+}
+
 type Asset struct {
 	name string
 	data []byte
@@ -30,31 +311,26 @@ type Asset struct {
 }
 
 type TileServer struct {
-	dataPath            string
-	dbPool              map[string]*sql.DB
-	stmts               map[string]*sql.Stmt
-	versionDescriptions map[string]string
-	diffPool            map[string]*sql.DB
-	diffStmts           map[string]*sql.Stmt
-	diffSortedDates     []string
-	indexHtml           string
-	latestVersion       string
-	previewImage        []byte
-	faviconData         []byte
-	assets              map[string]*Asset
+	dataPath        string
+	dbManager       *DatabaseManager
+	diffPool        map[string]*sql.DB
+	diffStmts       map[string]*sql.Stmt
+	diffSortedDates []string
+	indexHtml       string
+	latestVersion   string
+	previewImage    []byte
+	faviconData     []byte
+	assets          map[string]*Asset
 }
 
 func NewTileServer(dataPath string) (*TileServer, error) {
 	ts := &TileServer{
-		dataPath:            dataPath,
-		dbPool:              make(map[string]*sql.DB),
-		stmts:               make(map[string]*sql.Stmt),
-		versionDescriptions: make(map[string]string),
-		diffPool:            make(map[string]*sql.DB),
-		diffStmts:           make(map[string]*sql.Stmt),
-		diffSortedDates:     make([]string, 0),
-		indexHtml:           "",
-		assets:              make(map[string]*Asset),
+		dataPath:        dataPath,
+		diffPool:        make(map[string]*sql.DB),
+		diffStmts:       make(map[string]*sql.Stmt),
+		diffSortedDates: make([]string, 0),
+		indexHtml:       "",
+		assets:          make(map[string]*Asset),
 	}
 
 	if err := ts.initializeDatabases(); err != nil {
@@ -83,94 +359,14 @@ func NewTileServer(dataPath string) (*TileServer, error) {
 
 // initializeDatabases scans for database files and initializes connections
 func (ts *TileServer) initializeDatabases() error {
-	files, err := os.ReadDir(ts.dataPath)
-	if err != nil {
-		return fmt.Errorf("failed to read directory: %w", err)
-	}
-
-	dbCount := 0
-	for _, file := range files {
-		if file.IsDir() {
-			continue
-		}
-
-		filename := file.Name()
-		if !strings.HasPrefix(filename, "v") || !strings.HasSuffix(filename, ".db") {
-			continue
-		}
-
-		// Extract version from filename (v1_*.db -> 1, desc)
-		name := strings.TrimSuffix(filename, ".db")
-		parts := strings.Split(name, "_")
-		var version string
-		var description string
-		if len(parts) == 2 {
-			version = parts[0]
-			description = parts[1]
-		} else {
-			version = parts[0]
-			description = ""
-		}
-		ts.versionDescriptions[version] = description
-
-		filename = ts.dataPath + "/" + filename
-		log.Printf("Initializing database: %s (version %s)", filename, version)
-
-		db, err := sql.Open("sqlite3", filename+"?cache=shared&mode=ro")
-		if err != nil {
-			return fmt.Errorf("failed to open database %s: %w", filename, err)
-		}
-
-		// Configure connection pool
-		db.SetMaxOpenConns(10)
-		db.SetMaxIdleConns(3)
-		db.SetConnMaxLifetime(24 * time.Hour) // Once a day refresh connections
-
-		// Test the connection
-		if err := db.Ping(); err != nil {
-			db.Close()
-			return fmt.Errorf("failed to ping database %s: %w", filename, err)
-		}
-
-		// Prepare the statement for this database
-		stmt, err := db.Prepare("SELECT data FROM tiles WHERE z = ? AND x = ? AND y = ?")
-		if err != nil {
-			db.Close()
-			return fmt.Errorf("failed to prepare statement for %s: %w", filename, err)
-		}
-
-		ts.stmts[version] = stmt
-		ts.dbPool[version] = db
-		dbCount++
-	}
-
-	if dbCount == 0 {
-		return fmt.Errorf("no database files found (looking for v*.db files)")
-	}
-
-	log.Printf("Initialized %d database(s)", dbCount)
-	return nil
+	ts.dbManager = NewDatabaseManager()
+	err := ts.dbManager.InitializeDatabases(ts.dataPath)
+	return err
 }
 
 func (ts *TileServer) initializeIndex() error {
-	// Collect versions and sort numerically
-	versions := make([]string, 0, len(ts.versionDescriptions))
-	for v := range ts.versionDescriptions {
-		versions = append(versions, v)
-	}
-	// Sort by numeric value after "v"
-	sort.Slice(versions, func(i, j int) bool {
-		vi := strings.TrimPrefix(versions[i], "v")
-		vj := strings.TrimPrefix(versions[j], "v")
-		// Try float comparison, fallback to string
-		fi, erri := strconv.ParseFloat(vi, 64)
-		fj, errj := strconv.ParseFloat(vj, 64)
-		if erri == nil && errj == nil {
-			return fi < fj
-		}
-		return vi < vj
-	})
-	ts.latestVersion = versions[len(versions)-1]
+	versions := ts.dbManager.days
+	ts.latestVersion = fmt.Sprintf("%.3f", versions[len(versions)-1])
 
 	// load index.html.tmpl and replace $$VERSION_OPTIONS$$ with options
 	data, err := os.ReadFile(ts.dataPath + "/index.html.tmpl")
@@ -181,8 +377,8 @@ func (ts *TileServer) initializeIndex() error {
 
 	options := make([]string, 0)
 	for _, version := range versions {
-		desc := ts.versionDescriptions[version]
-		value := fmt.Sprintf("{version: '%s', date: '%s'}", version, desc)
+		desc := dateFromVersion(version)
+		value := fmt.Sprintf("{version: '%.3f', date: '%s'}", version, desc)
 		options = append(options, value)
 	}
 	content = strings.ReplaceAll(content, "//$$VERSION_OPTIONS$$", strings.Join(options, ","))
@@ -227,7 +423,7 @@ func ParseTileCoords(zStr, xStr, yStr string) (z, x, y int, err error) {
 // serveTile handles tile requests
 func (ts *TileServer) serveTile(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	version := vars["version"]
+	versionStr := vars["version"]
 	zStr := vars["z"]
 	xStr := vars["x"]
 	yStr := vars["y"]
@@ -238,46 +434,35 @@ func (ts *TileServer) serveTile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tileData, err := ts.GetTile(z, x, y, version)
+	versionFloat, err := strconv.ParseFloat(versionStr, 32)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			http.NotFound(w, r)
-			return
-		}
-		log.Printf("Database query error: %v", err)
-		http.Error(w, "Database error", http.StatusInternalServerError)
+		http.Error(w, "invalid version", http.StatusBadRequest)
 		return
 	}
+	versionUint := uint32(versionFloat)
 
 	// Set appropriate headers
 	tileKey := GetTileKey(z, x, y)
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Length", strconv.Itoa(len(tileData)))
 	w.Header().Set("Cache-Control", "public, max-age=86400") // Cache for 1 day
-	w.Header().Set("ETag", fmt.Sprintf(`"%s-%s"`, version, tileKey))
+	w.Header().Set("ETag", fmt.Sprintf(`"%s-%s"`, versionUint, tileKey))
 
 	// Check if client has cached version
 	if match := r.Header.Get("If-None-Match"); match != "" {
-		if match == fmt.Sprintf(`"%s-%s"`, version, tileKey) {
+		if match == fmt.Sprintf(`"%s-%s"`, versionUint, tileKey) {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
 	}
 
 	// Write tile data
-	w.WriteHeader(http.StatusOK)
-	w.Write(tileData)
-}
-
-func (ts *TileServer) GetTile(z, x, y int, version string) ([]byte, error) {
-	stmt, exists := ts.stmts[version]
-	if !exists {
-		return nil, fmt.Errorf("requested version %s not found", version)
+	err = ts.dbManager.GetAllDiff(z, x, y, versionUint, w)
+	if err != nil {
+		log.Printf("Database query error: %v", err)
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
 	}
-
-	var tileData []byte
-	err := stmt.QueryRow(z, x, y).Scan(&tileData)
-	return tileData, err
+	w.WriteHeader(http.StatusOK)
 }
 
 func (ts *TileServer) serveIndex(w http.ResponseWriter, _ *http.Request) {
@@ -288,74 +473,58 @@ func (ts *TileServer) serveIndex(w http.ResponseWriter, _ *http.Request) {
 
 // Close closes all database connections
 func (ts *TileServer) Close() error {
-	var lastErr error
-
-	// Close prepared statements
-	for version, stmt := range ts.stmts {
-		if err := stmt.Close(); err != nil {
-			log.Printf("Error closing statement for version %s: %v", version, err)
-			lastErr = err
-		}
-	}
-
-	// Close database connections
-	for version, db := range ts.dbPool {
-		if err := db.Close(); err != nil {
-			log.Printf("Error closing database for version %s: %v", version, err)
-			lastErr = err
-		}
-	}
-
-	return lastErr
+	return ts.dbManager.Close()
 }
 
 func (ts *TileServer) MakeLatestImage() ([]byte, error) {
+	return nil, fmt.Errorf("TODO")
+
 	// Get latest tile (z=0, x=0, y=0)
-	latestBaseVersion := strings.Split(ts.latestVersion, ".")[0]
-	latestTile, err := ts.GetTile(0, 0, 0, latestBaseVersion)
-	if err != nil {
-		return nil, err
-	}
-	latestImg, err := png.Decode(bytes.NewReader(latestTile))
-	if err != nil {
-		return nil, err
-	}
+	// latestBaseVersion := strings.Split(ts.latestVersion, ".")[0]
+	// latestTile, err := ts.GetTile(0, 0, 0, latestBaseVersion)
+	// if err != nil {
+	// 	return nil, err
+	// }
+	// latestImg, err := png.Decode(bytes.NewReader(latestTile))
+	// if err != nil {
+	// 	return nil, err
+	// }
 
-	// Open basemap image
-	f, err := os.Open(path.Join(ts.dataPath, "osm000.png"))
-	if err != nil {
-		return latestTile, err
-	}
-	defer f.Close()
-	basemap, err := png.Decode(f)
-	if err != nil {
-		return latestTile, err
-	}
+	// // Open basemap image
+	// f, err := os.Open(path.Join(ts.dataPath, "osm000.png"))
+	// if err != nil {
+	// 	return latestTile, err
+	// }
+	// defer f.Close()
+	// basemap, err := png.Decode(f)
+	// if err != nil {
+	// 	return latestTile, err
+	// }
 
-	// Overlay latest tile on basemap
-	if basemap.Bounds() != latestImg.Bounds() {
-		return latestTile, fmt.Errorf("basemap size does not match latest tile size")
-	}
-	outImg := image.NewRGBA(basemap.Bounds())
-	for y := 0; y < basemap.Bounds().Dy(); y++ {
-		for x := 0; x < basemap.Bounds().Dx(); x++ {
-			r, g, b, a := basemap.At(x, y).RGBA()
-			tr, tg, tb, ta := latestImg.At(x, y).RGBA()
-			if ta > 0 {
-				outImg.Set(x, y, color.RGBA{uint8(tr >> 8), uint8(tg >> 8), uint8(tb >> 8), uint8(ta >> 8)})
-			} else {
-				outImg.Set(x, y, color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), uint8(a >> 8)})
-			}
-		}
-	}
+	// // Overlay latest tile on basemap
+	// if basemap.Bounds() != latestImg.Bounds() {
+	// 	return latestTile, fmt.Errorf("basemap size does not match latest tile size")
+	// }
+	// outImg := image.NewRGBA(basemap.Bounds())
+	// for y := 0; y < basemap.Bounds().Dy(); y++ {
+	// 	for x := 0; x < basemap.Bounds().Dx(); x++ {
+	// 		r, g, b, a := basemap.At(x, y).RGBA()
+	// 		tr, tg, tb, ta := latestImg.At(x, y).RGBA()
+	// 		if ta > 0 {
+	// 			outImg.Set(x, y, color.RGBA{uint8(tr >> 8), uint8(tg >> 8), uint8(tb >> 8), uint8(ta >> 8)})
+	// 		} else {
+	// 			outImg.Set(x, y, color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), uint8(a >> 8)})
+	// 		}
+	// 	}
+	// }
 
-	// Encode output image to PNG
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, outImg); err != nil {
-		return latestTile, err
-	}
+	// // Encode output image to PNG
+	// var buf bytes.Buffer
+	// if err := png.Encode(&buf, outImg); err != nil {
+	// 	return latestTile, err
+	// }
 
-	return buf.Bytes(), nil
+	// return buf.Bytes(), nil
 }
 
 func (ts *TileServer) MakeFavicon() ([]byte, error) {
@@ -444,7 +613,6 @@ func (ts *TileServer) initializeDiffs() error {
 		date := parts[1]
 
 		filename = path.Join(ts.dataPath, "diffs", filename)
-		log.Printf("Initializing diff: %s (date %s)", filename, date)
 
 		db, err := sql.Open("sqlite3", filename+"?cache=shared&mode=ro")
 		if err != nil {
@@ -560,8 +728,8 @@ func (ts *TileServer) serveAllDiff(w http.ResponseWriter, r *http.Request) {
 	zStr := vars["z"]
 	xStr := vars["x"]
 	yStr := vars["y"]
-	from := r.URL.Query().Get("from")
-	to := r.URL.Query().Get("to")
+	from := strings.TrimSpace(r.URL.Query().Get("from"))
+	to := strings.TrimSpace(r.URL.Query().Get("to"))
 
 	z, x, y, err := ParseTileCoords(zStr, xStr, yStr)
 	if err != nil {
@@ -594,12 +762,12 @@ func (ts *TileServer) serveAllDiff(w http.ResponseWriter, r *http.Request) {
 
 func (ts *TileServer) GetAllDiff(x, y int, writer http.ResponseWriter, from, to string) error {
 	dateFrom, err := dateToEpochHour(from)
-	if err != nil {
+	if from == "" || err != nil {
 		dateFrom = 0
 	}
 	dateTo, err := dateToEpochHour(to)
-	if err != nil {
-		dateTo = 2 ^ 32 - 1
+	if to == "" || err != nil {
+		dateTo = ^uint32(0)
 	}
 	for _, dateStr := range ts.diffSortedDates {
 		date, err := dateToEpochHour(dateStr)
@@ -678,7 +846,7 @@ func main() {
 	r := mux.NewRouter()
 
 	// Tile endpoint with version, z, x, y parameters
-	r.HandleFunc("/tiles/{version:v[0-9a-z.]+}/{z:[0-9]+}/{x:[0-9]+}/{y:[0-9]+}.zst",
+	r.HandleFunc("/tiles/{version:[0-9.]+}/{z:[0-9]+}/{x:[0-9]+}/{y:[0-9]+}.zst",
 		tileServer.serveTile).Methods("GET")
 
 	r.HandleFunc("/diff", func(w http.ResponseWriter, r *http.Request) {
@@ -769,5 +937,4 @@ type responseWriter struct {
 
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.statusCode = code
-	rw.ResponseWriter.WriteHeader(code)
 }

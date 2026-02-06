@@ -32,148 +32,6 @@ pub fn init_panic_hook() {
     console_error_panic_hook::set_once();
 }
 
-/// Convert compressed paletted bytes to a PNG blob.
-/// 
-/// Takes zstd-compressed paletted image data (format: [width u32][height u32][indices...])
-/// and returns the PNG data as a byte vector.
-/// 
-/// # Arguments
-/// * `compressed` - The compressed paletted image data as a JavaScript Uint8Array (or Vec<u8>)
-/// 
-/// # Returns
-/// A JavaScript Uint8Array containing the PNG file data
-/// 
-/// # Errors
-/// Returns a JsValue error if decompression or PNG encoding fails
-#[cfg(feature = "wasm")]
-#[wasm_bindgen]
-pub fn compressed_bytes_to_png_blob(compressed: &[u8]) -> Result<Vec<u8>, wasm_bindgen::JsValue> {
-    let paletted = image::compressed_bytes_to_paletted(compressed)
-        .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to decompress: {}", e)))?;
-
-    let mut png_bytes = Vec::new();
-    {
-        image::paletted_to_png(&paletted, &mut png_bytes)
-            .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to encode PNG: {}", e)))?;
-    }
-
-    Ok(png_bytes)
-}
-
-fn compressed_apply_diff(base_compressed: &[u8], diff_compressed: &[u8]) -> Result<PalettedImage, wasm_bindgen::JsValue> {
-    console_log!("base={} diff={}", base_compressed.len(), diff_compressed.len());
-    if (base_compressed.len() == 0) && (diff_compressed.len() == 0) {
-        return Ok(image::PalettedImage{ height: 1000, width: 1000, indices: vec![0u8; 1000*1000] })
-    } else if base_compressed.len() == 0 {
-        let diff_paletted = image::compressed_bytes_to_paletted(diff_compressed)
-            .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to decompress: {}", e)))?;
-        return Ok(diff_paletted)
-    } else if diff_compressed.len() == 0 {
-        let base_paletted = image::compressed_bytes_to_paletted(base_compressed)
-            .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to decompress: {}", e)))?;
-        return Ok(base_paletted);
-    } else {
-        let base_paletted = image::compressed_bytes_to_paletted(base_compressed)
-            .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to decompress: {}", e)))?;
-
-        let diff_paletted = image::compressed_bytes_to_paletted(diff_compressed)
-            .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to decompress: {}", e)))?;
-
-        let paletted = image::apply_diff_paletted(&base_paletted, &diff_paletted);
-        return Ok(paletted)
-    }
-}
-
-#[cfg(feature = "wasm")]
-#[wasm_bindgen]
-pub fn diff_compressed_bytes_to_png_blob(base_compressed: &[u8], diff_compressed: &[u8]) -> Result<Vec<u8>, wasm_bindgen::JsValue> {
-
-    let paletted = compressed_apply_diff(base_compressed, diff_compressed)?;
-
-    let mut png_bytes = Vec::new();
-    {
-        image::paletted_to_png(&paletted, &mut png_bytes)
-            .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to encode PNG: {}", e)))?;
-    }
-
-    Ok(png_bytes)
-}
-
-#[cfg(feature = "wasm")]
-#[wasm_bindgen]
-pub fn compressed_4to1(
-    compressed1: &[u8],
-    compressed2: &[u8],
-    compressed3: &[u8],
-    compressed4: &[u8],
-) -> Result<Vec<u8>, wasm_bindgen::JsValue> {
-    let p1 = if compressed1.len() == 0 {
-        image::PalettedImage{ height: 1000, width: 1000, indices: vec![0u8; 1000*1000] }
-    } else {
-        image::compressed_bytes_to_paletted(compressed1).map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to decompress image 1: {}", e)))?
-    };
-    let p2 = if compressed2.len() == 0 {
-        image::PalettedImage{ height: 1000, width: 1000, indices: vec![0u8; 1000*1000] }
-    } else {
-        image::compressed_bytes_to_paletted(compressed2).map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to decompress image 2: {}", e)))?
-    };
-    let p3 = if compressed3.len() == 0 {
-        image::PalettedImage{ height: 1000, width: 1000, indices: vec![0u8; 1000*1000] }
-    } else {
-        image::compressed_bytes_to_paletted(compressed3).map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to decompress image 3: {}", e)))?
-    };
-    let p4 = if compressed4.len() == 0 {
-        image::PalettedImage{ height: 1000, width: 1000, indices: vec![0u8; 1000*1000] }
-    } else {
-        image::compressed_bytes_to_paletted(compressed4).map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to decompress image 4: {}", e)))?
-    };
-
-    let mut weights = [100u32; 256];
-    weights[0] = 0; // don't care about transparent pixels
-    weights[1] = 50; // reduce importance of black pixels
-    let res = image::downscale_4to1(&p1, &p2, &p3, &p4, &weights);
-
-    let mut png_bytes = Vec::new();
-    {
-        image::paletted_to_png(&res, &mut png_bytes)
-            .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to encode PNG: {}", e)))?;
-    }
-
-    Ok(png_bytes)
-}
-
-#[cfg(feature = "wasm")]
-#[wasm_bindgen]
-pub fn diff_compressed_4to1(
-    base_compressed1: &[u8],
-    base_compressed2: &[u8],
-    base_compressed3: &[u8],
-    base_compressed4: &[u8],
-    diff_compressed1: &[u8],
-    diff_compressed2: &[u8],
-    diff_compressed3: &[u8],
-    diff_compressed4: &[u8],
-) -> Result<Vec<u8>, wasm_bindgen::JsValue> {
-    let p1 = compressed_apply_diff(base_compressed1, diff_compressed1)?;
-    let p2 = compressed_apply_diff(base_compressed2, diff_compressed2)?;
-    let p3 = compressed_apply_diff(base_compressed3, diff_compressed3)?;
-    let p4 = compressed_apply_diff(base_compressed4, diff_compressed4)?;
-
-
-    let mut weights = [100u32; 256];
-    weights[0] = 0; // don't care about transparent pixels
-    weights[1] = 50; // reduce importance of black pixels
-    let res = image::downscale_4to1(&p1, &p2, &p3, &p4, &weights);
-
-    let mut png_bytes = Vec::new();
-    {
-        image::paletted_to_png(&res, &mut png_bytes)
-            .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to encode PNG: {}", e)))?;
-    }
-
-    Ok(png_bytes)
-}
-
 #[cfg(feature = "wasm")]
 #[wasm_bindgen]
 pub async fn wasm_screenshot(base_url: &str, version: &str, x1: i64, y1: i64, x2: i64, y2: i64) -> Result<Vec<u8>, JsValue> {
@@ -187,7 +45,7 @@ pub async fn wasm_screenshot(base_url: &str, version: &str, x1: i64, y1: i64, x2
 
     for y in y1..(y2+1) {
         for x in x1..(x2+1) {
-            let url = format!("{}/{}/11/{}/{}.png", base_url, version, x, y);
+            let url = format!("{}/{}/11/{}/{}.zst", base_url, version, x, y);
             let request = Request::new_with_str_and_init(&url, &opts)?;
             let resp_value = JsFuture::from(window.fetch_with_request(&request)).await?;
             assert!(resp_value.is_instance_of::<Response>());
@@ -197,8 +55,16 @@ pub async fn wasm_screenshot(base_url: &str, version: &str, x1: i64, y1: i64, x2
                     use js_sys::Uint8Array;
                     let jsvalue = JsFuture::from(resp.array_buffer()?).await?;
                     let data = Uint8Array::new(&jsvalue).to_vec();
-                    image::compressed_bytes_to_paletted(&data)
-                        .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to decode compressed tile: {}", e)))?
+                    match image_from_history(version, &data) {
+                        Ok(img) => img,
+                        Err(e) => {
+                            if e == wasm_bindgen::JsValue::from_str("No images for requested version") || e == wasm_bindgen::JsValue::from_str("Empty data") {
+                                PalettedImage { width: 1000, height: 1000, indices: vec![0u8; 1000*1000] }
+                            } else {
+                                return Err(e);
+                            }
+                        }
+                    }
                 },
                 404 => {
                     PalettedImage { width: 1000, height: 1000, indices: vec![0u8; 1000*1000] }
@@ -213,7 +79,7 @@ pub async fn wasm_screenshot(base_url: &str, version: &str, x1: i64, y1: i64, x2
 
     let mut png: Vec<u8> = Vec::new();
     {
-        image::paletted_to_png(&target, &mut png)
+        image::paletted_to_png(&target, &mut png, true)
             .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to encode PNG: {}", e)))?;
     }
 
@@ -264,44 +130,45 @@ pub async fn wasm_video(base_url: &str, x1: i64, y1: i64, x2: i64, y2: i64) -> R
     Ok(png)
 }
 
-fn images_from_history(data: &Vec<u8>) -> anyhow::Result<Vec<u8>> {
-    let mut builder = tar::Builder::new(Vec::new());
+fn image_from_history(version: &str, data: &[u8]) -> Result<PalettedImage, wasm_bindgen::JsValue> {
+    if data.len() == 0 {
+        return Err(wasm_bindgen::JsValue::from_str("Empty data"));
+    }
+    let version_float = version.parse::<f32>()
+        .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to parse version: {}", e)))?;
+    let version_uint = (version_float * 1000.0) as u32;
 
-    let mut last_img: Option<PalettedImage> = None; 
-    let mut offset = 0;
-    while offset < data.len() {
-        let date_hours = u32::from_le_bytes([data[offset+0], data[offset+1], data[offset+2], data[offset+3]]) as usize;
-        offset += 4;
-        let block_size = u32::from_le_bytes([data[offset+0], data[offset+1], data[offset+2], data[offset+3]]) as usize;
-        offset += 4;
-        console_log!("date {} size {}", date_hours, block_size);
-        let diff_paletted = image::compressed_bytes_to_paletted(&data[offset..(offset+block_size)])?;
-        offset += block_size;
+    let tiles = screenshot::TileHistory::from_bytes(0, 0, &data)
+        .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to decode tile history: {}", e)))?;
 
-        let paletted = if let Some(last) = &last_img {
-            let applied = image::apply_diff_paletted(last, &diff_paletted);
-            console_log!("applied diff");
-            last_img = Some(applied);
-            last_img.as_ref().unwrap()
-        } else {
-            last_img = Some(diff_paletted);
-            last_img.as_ref().unwrap()
-        };
-        let png = paletted.to_png()?;
-
-        let mut header = tar::Header::new_gnu();
-        let filename = format!("{}.png", date_hours);
-        header.set_path(filename)?;
-        header.set_size(png.len() as u64);
-        header.set_mode(0o644);
-        let dt =chrono::DateTime::from_timestamp((date_hours as i64)*3600, 0).unwrap_or_default();
-        header.set_mtime(dt.timestamp() as u64);
-        header.set_cksum();
-        builder.append(&header, &png[..])?;
-
+    // hasmap are not ordered, so we need to sort the keys
+    let mut keys = tiles.imgs.keys().cloned().collect::<Vec<u32>>();
+    keys.sort();
+    // Keep keys that are <= version_uint
+    keys = keys.into_iter().filter(|k| *k <= version_uint).collect::<Vec<u32>>();
+    if keys.len() == 0 {
+        return Err(wasm_bindgen::JsValue::from_str("No images for requested version"));
     }
 
-    let data = builder.into_inner()?;
-    Ok(data)
+    // Load base image
+    let base_data = tiles.imgs.get(&keys[0]).unwrap();
+    let mut base_paletted = image::compressed_bytes_to_paletted(&base_data)
+        .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to decompress base image: {}", e)))?;
+
+    // Apply diffs
+    for key in keys.iter().skip(1) {
+        let version_data = tiles.imgs.get(key).unwrap();
+        let version_paletted = image::compressed_bytes_to_paletted(&version_data)
+            .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to decompress version image: {}", e)))?;
+
+        base_paletted = image::apply_diff_paletted(&base_paletted, &version_paletted);
+    }
+    Ok(base_paletted)
 }
 
+#[cfg(feature = "wasm")]
+#[wasm_bindgen]
+pub fn get_image(version: &str, data: &[u8]) -> Result<Vec<u8>, wasm_bindgen::JsValue> {
+    let base_paletted = image_from_history(version, data)?;
+    base_paletted.to_png().map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to encode png: {}", e)))
+}
