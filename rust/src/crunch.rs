@@ -1,10 +1,14 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use anyhow::{self, Context};
+use dashmap::DashMap;
 
-use crate::image;
+use crate::image::{self, CompressedImage};
 use crate::tilesdb::TileDB;
+use crate::utils::DateHours;
 
 pub struct Metrics {
     start_time: std::time::Instant,
@@ -61,10 +65,10 @@ impl Metrics {
     fn report_metrics(&self) {
         const TICK_RATE: f64 = 5.0;
         loop {
+            std::thread::sleep(std::time::Duration::from_secs_f64(TICK_RATE));
             if self.stop.load(std::sync::atomic::Ordering::SeqCst) {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_secs_f64(TICK_RATE));
             
             let done = self.done.load(std::sync::atomic::Ordering::SeqCst);
             let success = self.success.load(std::sync::atomic::Ordering::SeqCst);
@@ -88,8 +92,8 @@ impl Metrics {
     }
 }
 
-fn group_files_by_day(folder_path: &str) -> anyhow::Result<HashMap<String, Vec<String>>> {
-    let mut grouped: HashMap<String, Vec<String>> = HashMap::new();
+fn list_diff_file(folder_path: &str, latest_date: DateHours) -> anyhow::Result<Vec<(DateHours, String)>> {
+    let mut files: Vec<(DateHours, String)> = Vec::new();
     
     for entry in fs::read_dir(folder_path)? {
         let entry = entry?;
@@ -97,36 +101,41 @@ fn group_files_by_day(folder_path: &str) -> anyhow::Result<HashMap<String, Vec<S
         
         if path.is_file() {
             if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
-                if let Some((date, _)) = extract_date_from_filename(filename) {
-                    grouped.entry(date).or_insert_with(Vec::new).push(filename.to_string());
+                if let Some(date) = extract_date_from_filename(filename) {
+                    if date > latest_date {
+                        files.push((date, filename.to_string()));
+                    }
                 }
             }
         }
     }
     
-    Ok(grouped)
+    files.sort_by_key(|(date, _)| *date);
+    Ok(files)
 }
 
-fn extract_date_from_filename(filename: &str) -> Option<(String, u32)> {
+fn extract_date_from_filename(filename: &str) -> Option<DateHours> {
     // Pattern: diff_v37.005_2025-09-17T05.db
-    // Extract YYYY-MM-DD from the filename
+    // Extract YYYY-MM-DDTHH from the filename
     if (filename.len() == 29) & filename[0..5].eq("diff_") & filename[26..].eq(".db") {
-        let day = &filename[13..23];
-        let hour = &filename[24..26];
-        let parsed_hour = hour.parse::<u32>();
-        if parsed_hour.is_err() {
-            return None;
-        }
-        return Some((day.to_string(), parsed_hour.unwrap()));
+        let chrono_happy_date = format!("{}:00", &filename[13..26]); // chrono parse needs minutes
+        let date = match chrono::NaiveDateTime::parse_from_str(&chrono_happy_date, "%Y-%m-%dT%H:%M") {
+            Ok(dt) => dt,
+            Err(e) => {
+                eprintln!("Failed to parse date from filename {}: {}", filename, e);
+                return None;
+            }
+        };
+        return Some(DateHours::from_datetime(date.and_utc()));
     }
     None
 }
 
 fn apply_to_db(target_db: &mut TileDB, diff_db: &mut TileDB, x: u16, y: u16) -> anyhow::Result<()> {
-    let diff_data = diff_db.get_tile(11, x as i32, y as i32).context(format!("Failed to get diff tile at x={}, y={}", x, y))?;
+    let diff_data = diff_db.get_tile_raw(11, x as i32, y as i32).context(format!("Failed to get diff tile at x={}, y={}", x, y))?;
     let diff = image::compressed_bytes_to_paletted(&diff_data)?;
 
-    let new = match target_db.get_tile(11, x as i32, y as i32) {
+    let new = match target_db.get_tile_raw(11, x as i32, y as i32) {
         Ok(data) => {
             let old = image::compressed_bytes_to_paletted(&data)?;
             image::apply_diff_paletted(&old, &diff)
@@ -136,11 +145,29 @@ fn apply_to_db(target_db: &mut TileDB, diff_db: &mut TileDB, x: u16, y: u16) -> 
         }
     };  
     let mut data = image::paletted_to_compressed_bytes(&new)?;
-    target_db.put_tile_delayed(11, x as i32, y as i32, &mut data, 0).context(format!("Failed to put tile at x={}, y={}", x, y))?;
+    target_db.put_tile_delayed(11, x as i32, y as i32, &mut data).context(format!("Failed to put tile at x={}, y={}", x, y))?;
     Ok(())
 }
 
-pub fn apply(target_path: &Path, diff_path: &Path, workers: usize) -> anyhow::Result<()> {
+fn apply_to_memory(tiles: &Arc<DashMap<(u16, u16), CompressedImage>>, diff_db: &mut TileDB, x: u16, y: u16) -> anyhow::Result<()> {
+    let diff_data = diff_db.get_tile_raw(11, x as i32, y as i32).context(format!("Failed to get diff tile at x={}, y={}", x, y))?;
+    let diff = image::compressed_bytes_to_paletted(&diff_data)?;
+
+    let new = match tiles.get(&(x, y)) {
+        Some(data) => {
+            let old = data.to_paletted()?;
+            image::apply_diff_paletted(&old, &diff)
+        },
+        None => {
+            diff
+        }
+    };  
+    let data = new.to_compressed_bytes()?;
+    tiles.insert((x, y), data);
+    Ok(())
+}
+
+pub fn apply(tiles: &Arc<DashMap<(u16, u16), CompressedImage>>, diff_path: &Path, workers: usize) -> anyhow::Result<()> {
     let (tx, rx) = std::sync::mpsc::sync_channel::<(u16, u16)>(workers*2);
     let rx = std::sync::Arc::new(std::sync::Mutex::new(rx)); // make multiple consumers from a single consumer
 
@@ -157,8 +184,8 @@ pub fn apply(target_path: &Path, diff_path: &Path, workers: usize) -> anyhow::Re
     for _ in 0..workers {
         let rx = rx.clone();
         let metrics = metrics.clone();
+        let arc_clone = tiles.clone();
 
-        let mut target_db = TileDB::new(target_path, false)?;
         let mut diff_db = TileDB::new(diff_path, true)?;
 
         let handle = std::thread::spawn(move || {
@@ -170,7 +197,7 @@ pub fn apply(target_path: &Path, diff_path: &Path, workers: usize) -> anyhow::Re
 
                 match job {
                     Ok((x, y)) => {
-                        apply_to_db(&mut target_db, &mut diff_db, x, y).unwrap(); // crash on failure
+                        apply_to_memory(&arc_clone, &mut diff_db, x, y).unwrap(); // crash on failure
                         metrics.record_success();
                     },
                     Err(_) => {
@@ -180,7 +207,6 @@ pub fn apply(target_path: &Path, diff_path: &Path, workers: usize) -> anyhow::Re
                     
                 }
             }
-            target_db.flush_pending_tiles().unwrap(); // Flush any remaining tiles
         });
         worker_handles.push(handle);
     }
@@ -208,160 +234,203 @@ pub fn apply(target_path: &Path, diff_path: &Path, workers: usize) -> anyhow::Re
     Ok(())
 }
 
-pub fn crunch_day(in_folder: &str, out_folder: &str, work_folder: &str, workers: usize) -> anyhow::Result<()>{
-    let grouped_files = group_files_by_day(in_folder)?;
-    for (_, files) in grouped_files {
-        if files.is_empty() {
-            continue;
-        }
-        let mut files_clone = files.clone();
-        files_clone.sort_by(|a, b| {
-            let (_, hour_a) = extract_date_from_filename(a).unwrap();
-            let (_, hour_b) = extract_date_from_filename(b).unwrap();
-            hour_a.cmp(&hour_b)
-        });
-
-        // create a copy of the first file, it will be used as base
-        let last_file = files_clone.last().unwrap();
-        let work_file = format!("{}/day_{}", work_folder, last_file);
-        let target_file = format!("{}/day_{}", out_folder, last_file);
-        // Skip if target file already exists
-        if Path::new(&target_file).exists() {
-            println!("Target file {} already exists, skipping.", target_file);
-            continue;
-        }
-        let base_file = format!("{}/{}", in_folder, files_clone[0]);
-        fs::copy(&base_file, &work_file)?;
-
-        // apply all diffs to the base file
-        for file in files_clone.iter().skip(1) {
-            let diff_file = format!("{}/{}", in_folder, file);
-            println!("Applying diff {} to {}", diff_file, work_file);
-            apply(Path::new(&work_file), Path::new(&diff_file), workers)?;
-        }
-        // move the final file to the output folder
-        fs::copy(&work_file, &target_file)?;
-         // remove the work file
-        fs::remove_file(&work_file)?;
-        
+fn save_tiles_to_db(tiles: &DashMap<(u16, u16), CompressedImage>, date: DateHours, current_file: &Path) -> anyhow::Result<PathBuf> {
+    let mut target_db = TileDB::new(current_file, false)?;
+    target_db.put_version(date, current_file.to_string_lossy().as_ref())?;
+    for item in tiles.iter() {
+        let (x, y) = item.key();
+        let data = item.value();
+        target_db.update_history_tile(11, *x, *y, date, data)?;
     }
+    let new_name = format!("w{}_{}.db", date.week(), date.0);
+    let folder_name = Path::new(&current_file).parent();
+    let new_path = match folder_name {
+        Some(folder) => folder.join(new_name),
+        None => Path::new(&new_name).to_path_buf(),
+    };
+    std::fs::rename(current_file, new_path.clone())?;
+    Ok(new_path)
+}
+
+fn crunch_tile(base_db: &mut TileDB, target_db: &mut TileDB, x: u16, y: u16) -> anyhow::Result<()> {
+    let base_history = match base_db.get_history_tile(11, x, y)? {
+        Some(history) => history,
+        None => return Ok(()), // no base tile, skip
+    };
+    let base_image = base_history.image(DateHours::max())?; // get the latest image from the history
+    let base_compressed = base_image.to_compressed_bytes()?;
+    // save the base image as the first entry in the history with the minimum date, so that future diffs can be applied on top of it
+    target_db.update_history_tile(11, x, y, DateHours::min(), &base_compressed)?;
     Ok(())
 }
 
-fn extract_week(filename: &str) -> Option<f32> {
-    // day_diff_v31.094_2025-08-09T22.db
-    // extract 31.094
-    if (filename.len() == 33) & filename[0..9].eq("day_diff_") & filename[30..].eq(".db") {
-        let parts: Vec<&str> = filename[10..].split("_").collect();
-        let week = parts[0].parse::<f32>();
-        match week {
-            Ok(week) => return Some(week),
-            Err(_) => return None,
+fn crunch_week(base_path: &Path, target_path: &Path, workers: usize) -> anyhow::Result<()> {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<(u16, u16)>(workers*2);
+    let rx = std::sync::Arc::new(std::sync::Mutex::new(rx)); // make multiple consumers from a single consumer
+
+    let metrics = std::sync::Arc::new(Metrics::new());
+
+    // Start metrics reporting thread
+    let metrics_clone = metrics.clone();
+    let _metrics_thread = std::thread::spawn(move || {
+        metrics_clone.report_metrics();
+    });
+
+    // Spawn workers
+    let mut worker_handles = Vec::new();
+    for _ in 0..workers {
+        let rx = rx.clone();
+        let metrics = metrics.clone();
+
+        let mut base_db = TileDB::new(base_path, true)?;
+        let mut target_db = TileDB::new(target_path, false)?;
+
+        let handle = std::thread::spawn(move || {
+            loop {
+                let job = {
+                    let rx = rx.lock().unwrap();
+                    rx.recv()
+                };
+
+                match job {
+                    Ok((x, y)) => {
+                        crunch_tile(&mut base_db, &mut target_db, x, y).unwrap(); // crash on failure
+                        metrics.record_success();
+                    },
+                    Err(_) => {
+                        // Channel closed, worker should exit
+                        break;
+                    } 
+                    
+                }
+            }
+        });
+        worker_handles.push(handle);
+    }
+
+    // Send jobs
+    let mut diff_db = TileDB::new(base_path, true)?;
+    let index = diff_db.list_tiles(11)?; // zoom level 11
+    println!("Index size: {}", index.len());
+    metrics.add_total_job(index.len() as u64);
+    for entry in  index {
+        tx.send(entry)?;
+    }
+
+    // Drop the sender to signal workers to exit
+    drop(tx);
+
+    // Wait for all workers to finish
+    for handle in worker_handles {
+        let _ = handle.join();
+    }
+
+    metrics.stop();
+    metrics.print_metrics();
+
+    Ok(())
+}
+
+fn make_path(folder: &str, date: DateHours) -> PathBuf {
+    let filename = format!("w{}_{}.db", date.week(), date.0);
+    Path::new(folder).join(filename)
+}
+
+fn extract_date_from_week_filename(filename: &str) -> Option<DateHours> {
+    // Pattern: w31_5309.db
+    // Extract 5309 from the filename
+    if filename.starts_with("w") && filename.ends_with(".db") {
+        let underscore_pos = filename.find('_').unwrap();
+        let date =  filename[underscore_pos+1..filename.len()-3].to_string();
+        if let Ok(date_uint) = date.parse::<u32>() {
+            return Some(DateHours(date_uint));
         }
     }
     None
 }
 
-pub fn crunch_week(in_folder: &str, out_folder: &str, work_folder: &str, workers: usize) -> anyhow::Result<()> {
-    let mut files: HashMap<String, String> = HashMap::new();
-
-    for entry in fs::read_dir(in_folder)? {
+fn last_week_file(folder_path: &str) -> anyhow::Result<(DateHours, String)> {
+    let mut latest_date = DateHours::min();
+    let mut latest_filename = String::new();
+    
+    for entry in fs::read_dir(folder_path)? {
         let entry = entry?;
         let path = entry.path();
         
         if path.is_file() {
             if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
-                if let Some(week) = extract_week(filename) {
-                    println!("Found week {} file: {}", week, filename);
-                    files.insert(week.to_string(), filename.to_string());
-                }
-            }
-        }
-    }
-
-    if files.len() < 2 {
-        return Err(anyhow::anyhow!("Not enough files to crunch."));
-    }
-
-    // sort by week
-    let mut weeks: Vec<f32> = files.keys().filter_map(|k| k.parse::<f32>().ok()).collect();
-    weeks.sort_by(|a, b| a.partial_cmp(b).unwrap());
-
-    // get already done weeks
-    let mut done_files: HashMap<String, String> = HashMap::new();
-    for entry in fs::read_dir(out_folder)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_file() {
-            if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
-                // filename pattern: w31_day_diff_v31.094_2025-08-09T22.db
-                if filename.starts_with("w") && filename.ends_with(".db") {
-                    let parts: Vec<&str> = filename[1..].split("_").collect();
-                    if parts.len() >= 2 {
-                        let week_str = parts[0];
-                        if let Ok(week) = week_str.parse::<u32>() {
-                            done_files.insert(week.to_string(), filename.to_string());
-                        }
+                if let Some(date) = extract_date_from_week_filename(filename) {
+                    if date > latest_date {
+                        latest_date = date;
+                        latest_filename = filename.to_string();
                     }
-
                 }
             }
         }
     }
-    // sort done weeks
-    let mut done_weeks: Vec<f32> = done_files.keys().filter_map(|k| k.parse::<f32>().ok()).collect();
-    done_weeks.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let last_week_done: f32 = if done_weeks.is_empty() {
-        -1.0
-    } else {
-        *done_weeks.last().unwrap()
-    };
     
-    // skip already done weeks
-    weeks = weeks.into_iter().filter(|w| w.floor() > last_week_done).collect();
-    if weeks.is_empty() {
-        println!("All weeks already processed.");
+    Ok((latest_date, latest_filename))
+}
+
+pub fn  crunch_day(in_folder: &str, out_folder: &str, work_folder: &str, workers: usize) -> anyhow::Result<()>{
+    println!("Crunching day diffs from {} to {}", in_folder, out_folder);
+
+    let (from_date, from_file) = last_week_file(out_folder)?;
+    println!("Found latest week file: {} with date {}", from_file, from_date.to_datetime());
+
+    let tiles: Arc<DashMap<(u16, u16), CompressedImage>> = Arc::new(DashMap::new());
+
+    // list all diff files after the latest, sorted by date
+    let files = list_diff_file(in_folder, from_date)?;
+    if files.len() == 0 {
+        println!("No diff files found in {} after date {}", in_folder, from_date.to_datetime());
         return Ok(());
     }
-
-    // create a copy of the first file, it will be used as base
-    let start_file = if last_week_done == -1.0 {
-        println!("No previous week found, starting from the beginning.");
-        let first_week = weeks[0];
-        let first_file = files.get(&first_week.to_string()).unwrap();
-        let base_file = format!("{}/{}", in_folder, first_file);
-        let prev_week = (first_week - 1.0).floor() as u32;
-        let target_file = format!("{}/w{}_{}", out_folder, prev_week, first_file);
-        fs::copy(&base_file, &target_file)?;
-        target_file
-    } else {
-        println!("Last week done: {}, resuming from next week.", last_week_done);
-        let last_done_file = done_files.get(&last_week_done.to_string()).unwrap();
-        let target_file = format!("{}/{}", out_folder, last_done_file);
-        target_file
-    };
-
-    let work_file = format!("{}/work_file.db", work_folder);
-    fs::copy(&start_file, &work_file)?;
-
-    let first_week = weeks[0];
-    let mut current_week = first_week.floor() as u32;
-    let mut last_file = start_file;
-    for week in weeks.iter() {
-        // save current week file if week changed
-        if current_week != week.floor() as u32 {
-            let week_target_file = format!("{}/w{}_{}", out_folder, current_week, last_file);
-            println!("Saving week file {}", week_target_file);
-            fs::copy(&work_file, &week_target_file)?;
-            current_week = week.floor() as u32;
-        }
-        
-        let file = files.get(&week.to_string()).unwrap();
-        let diff_file = format!("{}/{}", in_folder, file);
-        println!("Applying diff {} to {}", diff_file, work_file);
-        apply(Path::new(&work_file), Path::new(&diff_file), workers)?;
-        last_file = file.to_string();
+    let first_file_date = files.get(0).unwrap().0;
+    let current_file = make_path(work_folder, first_file_date);
+    if (from_date != DateHours::min()) && (first_file_date.week() != from_date.week()) {
+        let from_path = Path::new(out_folder).join(from_file);
+        println!("First diff file is from week {}. Crunching base tiles into {}", first_file_date.week(), current_file.display());
+        crunch_week(&from_path, &current_file, workers)?;
     }
 
+    // apply each diff file to the in-memory hashmap, and save the result to a new week file when the week changes
+    // and for each finished day we commit to the db
+    let mut prev_date = first_file_date;
+    let mut current_file = current_file;
+    for (date, file) in files {
+        // commit to db on day change
+        if date.day() != prev_date.day() {
+            println!("Day changed from {} to {}. Committing to db file {}", prev_date.day(), date.day(), current_file.display());
+            let new_file = save_tiles_to_db(&tiles, prev_date, &current_file)?;
+            tiles.clear(); // Clear the in-memory tiles after saving to db
+            current_file = new_file;
+            println!("Saved day file. New file: {} ", current_file.display());
+            // if the week of the file is different from the latest,
+            // we need to create a new week file based on the latest week file.
+            if date.week() != prev_date.week() {
+                println!("Week changed from {} to {}", prev_date.week(), date.week());
+                println!("Saving week file {} for week {}", current_file.display(), prev_date.week());
+                // copy week file to out_folder
+                let current_basename = Path::new(&current_file).file_name().unwrap();
+                let out_file = Path::new(out_folder).join(current_basename);
+                if !Path::exists(&out_file) {
+                    std::fs::copy(&current_file, &out_file)?;
+                    std::fs::remove_file(&current_file)?;
+                }
+                current_file = make_path(work_folder, date);
+                println!("Crunching new week file {} for week {}", current_file.display(), date.week());
+                crunch_week(&out_file, &current_file, workers)?;
+            }
+        }
+
+        println!("Processing diff file {} for date {}. Current file: {}", file, date.to_datetime(), current_file.display());
+        // apply diff to the tile hashmap in memory
+        let diff_file = format!("{}/{}", in_folder, file);
+        println!("Applying diff {} to {}", diff_file, date.to_datetime());
+        apply(&tiles, Path::new(&diff_file), workers)?;
+        println!("tiles size after applying diff: {}", tiles.len());
+        prev_date = date;
+    }
     Ok(())
 }

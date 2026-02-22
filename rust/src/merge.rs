@@ -123,16 +123,16 @@ pub fn build_job_mask(db: &mut TileDB, maxz: i32) -> Result<Vec<Vec<Vec<bool>>>,
 }
 
 pub fn get_resized_tile(db: &mut TileDB, z: i32, x: i32, y: i32) -> Result<PalettedImage, Box<dyn Error>> {
-    let data = db.get_tile(z, x, y)?;
+    let data = db.get_tile_raw(z, x, y)?;
     let paletted = compressed_bytes_to_paletted(&data)?;
     let resized = downscale_mode_weighted_2x2(&paletted, &WEIGHTS);
     Ok(resized)
 }
 
 pub fn get_resized_tile_diff(db: &mut TileDB, base_db: &mut TileDB, z: i32, x: i32, y: i32) -> Result<PalettedImage, Box<dyn Error>> {
-    let data = db.get_tile(z, x, y)?;
+    let data = db.get_tile_raw(z, x, y)?;
     let paletted = compressed_bytes_to_paletted(&data)?;
-    match base_db.get_tile(z, x, y) {
+    match base_db.get_tile_raw(z, x, y) {
         Err(_) => {
             let resized = downscale_mode_weighted_2x2(&paletted, &WEIGHTS);
             Ok(resized)
@@ -164,7 +164,7 @@ fn merge_job_recursive(metrics: std::sync::Arc<Metrics>, db: &mut TileDB, z: i32
         // Skip storing layer 10 tiles to save space
         // Layer 10 can be quickly generated from layer 11 clientside on-the-fly
         let compressed = paletted_to_compressed_bytes(&merged)?;
-        db.put_tile_delayed(z, x as i32, y as i32, &compressed, 0)?;
+        db.put_tile_delayed(z, x as i32, y as i32, &compressed)?;
     }
     metrics.record_success();
 
@@ -210,17 +210,17 @@ fn merge_job_recursive_diff(metrics: std::sync::Arc<Metrics>, db: &mut TileDB, b
         // Skip storing layer 10 tiles to save space
         // Layer 10 can be quickly generated from layer 11 clientside on-the-fly
 
-        match base_db.get_tile(z, x as i32, y as i32) {
+        match base_db.get_tile_raw(z, x as i32, y as i32) {
             Err(_) => {
                 let compressed = paletted_to_compressed_bytes(&merged)?;
-                db.put_tile_delayed(z, x as i32, y as i32, &compressed, 0)?;
+                db.put_tile_delayed(z, x as i32, y as i32, &compressed)?;
             },
             Ok(data) => {
                 let base_paletted = compressed_bytes_to_paletted(&data)?;
                 let (has_changed, diff) = diff_paletted(&base_paletted, &merged);
                 if has_changed {
                     let compressed = paletted_to_compressed_bytes(&diff)?;
-                    db.put_tile_delayed(z, x as i32, y as i32, &compressed, 0)?;
+                    db.put_tile_delayed(z, x as i32, y as i32, &compressed)?;
                 }
             }
         };
@@ -243,7 +243,7 @@ fn finish_jobs_recursive( metrics: std::sync::Arc<Metrics>, db: &mut TileDB, til
 
     let merged = merge_2x2(&p1, &p2, &p3, &p4);
     let compressed = paletted_to_compressed_bytes(&merged)?;
-    db.put_tile_delayed(z, x as i32, y as i32, &compressed, 0)?;
+    db.put_tile_delayed(z, x as i32, y as i32, &compressed)?;
     metrics.record_success();
 
     let resized = downscale_mode_weighted_2x2(&merged, &WEIGHTS);

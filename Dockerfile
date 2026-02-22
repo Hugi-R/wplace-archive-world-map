@@ -4,16 +4,16 @@ RUN apt-get update && apt-get install -y gcc-multilib gcc-mingw-w64
 
 WORKDIR /app
 
-COPY go.mod go.sum ./
+COPY go/go.mod go/go.sum ./
 RUN go mod download
 
-COPY ./img img
-COPY ./tileserver tileserverSrc
+COPY go/img img
+COPY go/tileserver tileserverSrc
 RUN go build -o tileserver ./tileserverSrc/server.go
 RUN GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CXX=x86_64-w64-mingw32-g++ CC=x86_64-w64-mingw32-gcc go build -o tileserver.exe tileserverSrc/server.go
-COPY ./store store
-COPY ./merger merger
-COPY ./plan plan
+COPY go/store store
+COPY go/merger merger
+COPY go/plan plan
 RUN go build -o import ./plan/
 RUN GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CXX=x86_64-w64-mingw32-g++ CC=x86_64-w64-mingw32-gcc go build -o import.exe ./plan/
 

@@ -2,10 +2,10 @@
 *
 
 # Allow files and directories
-!go.mod
-!go.sum
-!/img
-!/merger
-!/store
-!/tileserver
-!/plan
+!go/go.mod
+!go/go.sum
+!go/img
+!go/merger
+!go/store
+!go/tileserver
+!go/plan

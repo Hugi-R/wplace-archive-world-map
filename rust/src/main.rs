@@ -9,10 +9,8 @@ use crate::tilesdb::TileDB;
 mod image;
 mod palette;
 mod tilesdb;
-mod ingest;
-mod reader_targz;
 mod merge;
-mod screenshot;
+mod utils;
 mod ingest_diff;
 mod crunch;
 
@@ -247,7 +245,7 @@ fn cmd_zst_bench(data_db: &str) -> anyhow::Result<()> {
 
         let tiles = db.list_tiles(11)?;
         for (x, y) in tiles {
-            let data = db.get_tile(11, x as i32, y as i32)?;
+            let data = db.get_tile_raw(11, x as i32, y as i32)?;
             let data = decompress(&data)?;
             let t =  std::time::Instant::now();
             let comp = compress(&data, level)?;
@@ -298,8 +296,47 @@ fn cmd_crunchday(in_folder: &str, out_folder: &str, work_folder: &str, workers: 
     crunch::crunch_day(in_folder, out_folder, work_folder, workers)
 }
 
-fn cmd_crunchweek(in_folder: &str, out_folder: &str, work_folder: &str, workers: usize) -> anyhow::Result<()> {
-    crunch::crunch_week(in_folder, out_folder, work_folder, workers)
+fn cmd_describe_tile(input: &str) -> anyhow::Result<()> {
+    // 4 bytes version, 4 bytes size, then zstd compressed data. Repeat
+    let data = std::fs::read(input)?;
+    let mut offset = 0;
+    loop {
+        // Read version and size
+        if data.len() < (offset + 8) {
+            break;
+        }
+        let version = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap());
+        let size = u32::from_le_bytes(data[offset+4..offset+8].try_into().unwrap()) as usize;
+        if data.len() < offset + 8 + size {
+            anyhow::bail!("Data too short for tile at offset {}", offset);
+        }
+        println!("version: {}, size: {}", version, size);
+        offset += 8 + size;
+    }
+    Ok(())
+}
+
+fn cmd_reencode_tile(db: &str) -> anyhow::Result<()> {
+    let mut db = TileDB::new(Path::new(db), false)?;
+    let tiles = db.list_tiles(11)?;
+    let total = tiles.len();
+    let mut count = 0;
+    for (x, y) in tiles {
+        count += 1;
+        if count % 10000 == 0 {
+            println!("Processing tile {} of {}", count, total);
+        }
+        let data = db.get_tile_raw(11, x as i32, y as i32)?;
+        let th = utils::TileHistory::from_bytes(x as u16, y as u16, &data)?;
+        if th.imgs.len() <= 1 {
+            continue; // nothing to change, skip
+        }
+        let new_data = th.to_bytes();
+        if data != new_data {
+            db.put_tile(11, x as i32, y as i32, &new_data)?;
+        }
+    }
+    Ok(())
 }
 
 fn main() {
@@ -343,21 +380,6 @@ fn main() {
             if let Err(e) = cmd_benchmark_resize() {
                 eprintln!("benchmark failed: {}", e);
                 std::process::exit(6);
-            }
-        }
-        "ingest" => {
-            if args.len() < 4 { usage(&args[0]); std::process::exit(2); }
-            let input = &args[2];
-            let output = &args[3];
-            let base = if args.len() > 4 { args[4].as_str() } else { "" };
-            let workers = if args.len() > 5 {
-                args[5].parse::<usize>().unwrap_or(1)
-            } else {
-                10
-            };
-            if let Err(e) = ingest::ingest(input, output, base, workers) {
-                eprintln!("ingest failed: {}", e);
-                std::process::exit(7);
             }
         }
         "4to1" => {
@@ -440,17 +462,15 @@ fn main() {
             };
             cmd_crunchday(in_folder, out_folder, work_folder, workers).unwrap();
         }
-        "crunchweek" => {
-            if args.len() < 5 { usage(&args[0]); std::process::exit(2); }
-            let in_folder = &args[2];
-            let out_folder = &args[3];
-            let work_folder = &args[4];
-            let workers = if args.len() > 5 {
-                args[5].parse::<usize>().unwrap_or(10)
-            } else {
-                10
-            };
-            cmd_crunchweek(in_folder, out_folder, work_folder, workers).unwrap();
+        "describe" => {
+            if args.len() < 3 { usage(&args[0]); std::process::exit(2); }
+            let input = &args[2];
+            cmd_describe_tile(input).unwrap();
+        }
+        "reencode" => {
+            if args.len() < 3 { usage(&args[0]); std::process::exit(2); }
+            let db = &args[2];
+            cmd_reencode_tile(db).unwrap();
         }
         _ => {
             usage(&args[0]);

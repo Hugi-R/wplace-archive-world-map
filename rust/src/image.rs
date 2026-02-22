@@ -29,8 +29,17 @@ impl PalettedImage {
         Ok(png)
     }
 
-    pub fn to_compressed_bytes(&self) -> anyhow::Result<Vec<u8>> {
-        paletted_to_compressed_bytes(self)
+    pub fn to_compressed_bytes(&self) -> anyhow::Result<CompressedImage> {
+        Ok(CompressedImage(paletted_to_compressed_bytes(self)?))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CompressedImage(pub Vec<u8>);
+
+impl CompressedImage {
+    pub fn to_paletted(&self) -> anyhow::Result<PalettedImage> {
+        compressed_bytes_to_paletted(&self.0)
     }
 }
 

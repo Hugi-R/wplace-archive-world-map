@@ -118,8 +118,8 @@ fn convert_wplacetools_diff(diff: &[u8]) -> Vec<u8> {
     res
 }
 
-fn apply_to_db(db: &mut TileDB, diff: PalettedImage, x: u16, y: u16, crc32: u32) -> anyhow::Result<()> {
-    let new = match db.get_tile(11, x as i32, y as i32) {
+fn apply_to_db(db: &mut TileDB, diff: PalettedImage, x: u16, y: u16) -> anyhow::Result<()> {
+    let new = match db.get_tile_raw(11, x as i32, y as i32) {
         Ok(data) => {
             let old = image::compressed_bytes_to_paletted(&data)?;
             image::apply_diff_paletted(&old, &diff)
@@ -129,7 +129,7 @@ fn apply_to_db(db: &mut TileDB, diff: PalettedImage, x: u16, y: u16, crc32: u32)
         }
     };
     let mut data = image::paletted_to_compressed_bytes(&new)?;
-    db.put_tile_delayed(11, x as i32, y as i32, &mut data, crc32)?;
+    db.put_tile_delayed(11, x as i32, y as i32, &mut data)?;
     Ok(())
 }
 
@@ -137,7 +137,7 @@ fn apply_entry<R: io::Seek + io::Read>(db: &mut TileDB, diff_file: &mut wplaceto
     let chunk = diff_file.read_chunk(&entry)?;
     let converted = convert_wplacetools_diff(&chunk);
     let img = PalettedImage { width: wplacetools::CHUNK_WIDTH, height: wplacetools::CHUNK_WIDTH, indices: converted };
-    apply_to_db(db, img, entry.x, entry.y, entry.checksum)?;
+    apply_to_db(db, img, entry.x, entry.y)?;
     Ok(())
 }
 

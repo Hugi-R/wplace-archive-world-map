@@ -558,13 +558,14 @@
       };
     }
 
-    async function getTile(version, z, x, y) {
+    // version is a date in DateHour format (uint32 representing number of hours since 2025-01-01)
+    async function getTile(_version, z, x, y) {
       const perfStart = performance.now();
-      const versionFloat = parseFloat(version);
-      const versionInt = Math.floor(versionFloat);
+      const version = parseInt(_version); // ensure it's an integer
+      const week = Math.floor(version / (7 * 24));
 
       const [tile] = await Promise.all([
-        fetch(`/tiles/${versionInt}/${z}/${x}/${y}.zst`)
+        fetch(`/tiles/${week}/${z}/${x}/${y}.zst`)
       ]);
       if (tile.status !== 200) {
         throw new Error("empty tile");
@@ -583,14 +584,14 @@
       metricsDecompress.push(perfEnd - perfStart);
 
       return img
-    }
+    } 
 
     // Register custom protocol
     maplibregl.addProtocol('merged', async (params, abortControler) => {
-      const { vBase, vDiff, z, x, y } = parseTileUrl(params.url);
+      const { version, z, x, y } = parseTileUrl(params.url);
 
       const cache = typeof caches !== 'undefined' ? await caches.open("merged-tiles") : null;
-      const cacheKey = `tile-${vDiff ? vDiff : vBase}-${z}-${x}-${y}`;
+      const cacheKey = `tile-${version}-${z}-${x}-${y}`;
 
       if (cache) {
         // Try to get from cache first
@@ -601,7 +602,7 @@
         }
       }
 
-      const img = await getTile(vDiff, z, x, y);
+      const img = await getTile(version, z, x, y);
       if (cache) {
         // Cache the response for future requests
         const response = new Response(img);
@@ -647,20 +648,10 @@
 
     function parseTileUrl(url) {
       // Example: merged://tiles/version/z/x/y.png
-      const match = url.match(/.*\/([^\/]+)\/(\d+)\/(\d+)\/(\d+)\.png/);
+      const match = url.match(/.*\/(\d+)\/(\d+)\/(\d+)\/(\d+)\.png/);
       if (!match) return {};
-      const version = match[1]
-      let vBase, vDiff;
-      if (version.includes('.')) {
-        vBase = version.split('.')[0];
-        vDiff = version;
-      } else {
-        vBase = version;
-        vDiff = null;
-      }
       return {
-      vBase: vBase,
-      vDiff: vDiff,
+      version: parseInt(match[1]),
       z: parseInt(match[2]),
       x: parseInt(match[3]),
       y: parseInt(match[4])
@@ -978,13 +969,14 @@
         if (((x2-x1) * (y2-y1)) > 400) {
           throw new Error("Image would be too big. Zoom in and try again.")
         }
-        const data = await wasmModule.wasm_screenshot("tiles", wplaceVersion, x1, y1, x2, y2);
+        const version = parseInt(wplaceVersion);
+        const data = await wasmModule.wasm_screenshot("tiles", version, x1, y1, x2, y2);
         const png = new Blob([data], { type: 'image/png' });
         console.log(png);
         const url = URL.createObjectURL(png);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `${wplaceVersion}-${x1}-${y1}-${x2}-${y2}.png`;
+        a.download = `${version}-${x1}-${y1}-${x2}-${y2}.png`;
         document.body.appendChild(a);
         a.click();
         a.remove();
