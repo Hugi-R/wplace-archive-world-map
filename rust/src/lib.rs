@@ -56,15 +56,19 @@ pub async fn wasm_screenshot(base_url: &str, version: u32, x1: i64, y1: i64, x2:
                     use js_sys::Uint8Array;
                     let jsvalue = JsFuture::from(resp.array_buffer()?).await?;
                     let data = Uint8Array::new(&jsvalue).to_vec();
-                    let tiles = utils::TileHistory::from_bytes(x as u16, y as u16, &data)
-                        .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to decode tile history: {}", e)))?;
-                    match tiles.image(version) {
-                        Ok(img) => img,
-                        Err(e) => {
-                            if e.to_string() == utils::ERR_NO_IMAGES_FOR_VERSION || e.to_string() == utils::ERR_TILE_HISTORY_NO_IMAGES {
-                                PalettedImage { width: 1000, height: 1000, indices: vec![0u8; 1000*1000] }
-                            } else {
-                                return Err(wasm_bindgen::JsValue::from_str(&format!("Failed to reconstruct image: {}", e)));
+                    if data.len() == 0 {
+                        PalettedImage { width: 1000, height: 1000, indices: vec![0u8; 1000*1000] }
+                    } else {
+                        let tiles = utils::TileHistory::from_bytes(x as u16, y as u16, &data)
+                            .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to decode tile history: {}", e)))?;
+                        match tiles.image(version) {
+                            Ok(img) => img,
+                            Err(e) => {
+                                if e.to_string() == utils::ERR_NO_IMAGES_FOR_VERSION || e.to_string() == utils::ERR_TILE_HISTORY_NO_IMAGES {
+                                    PalettedImage { width: 1000, height: 1000, indices: vec![0u8; 1000*1000] }
+                                } else {
+                                    return Err(wasm_bindgen::JsValue::from_str(&format!("Failed to reconstruct image: {}", e)));
+                                }
                             }
                         }
                     }

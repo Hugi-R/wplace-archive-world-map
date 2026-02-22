@@ -371,12 +371,15 @@ func (ts *TileServer) serveTile(w http.ResponseWriter, r *http.Request) {
 
 	// Write tile data
 	data, err := ts.dbManager.GetTile(z, x, y, versionUint)
+	if err == sql.ErrNoRows {
+		http.Error(w, "tile not found", http.StatusNotFound)
+		return
+	}
 	if err != nil {
 		log.Printf("Database query error: %v", err)
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
 	}
-	w.WriteHeader(http.StatusOK)
 	w.Write(data)
 }
 
@@ -413,9 +416,7 @@ func (ts *TileServer) serveAllDiff(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Write tile data
-	w.WriteHeader(http.StatusOK)
 	ts.dbManager.GetAllDiffs(z, x, y, w)
-
 }
 
 func (ts *TileServer) serveIndex(w http.ResponseWriter, _ *http.Request) {
@@ -652,4 +653,5 @@ type responseWriter struct {
 
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.statusCode = code
+	rw.ResponseWriter.WriteHeader(code)
 }
