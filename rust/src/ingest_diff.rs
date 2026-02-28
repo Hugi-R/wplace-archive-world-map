@@ -216,7 +216,7 @@ pub fn apply(db_path: &Path, diff_path: &Path, workers: usize) -> anyhow::Result
     Ok(())
 }
 
-pub fn convert(out_folder: &str, diff_folder: &str, workers: usize) -> anyhow::Result<()> {
+pub fn convert(out_folder: &str, diff_folder: &str, workers: usize, temp_folder: &str) -> anyhow::Result<()> {
 
     for entry in fs::read_dir(&diff_folder)? {
         let entry = entry?;
@@ -225,11 +225,40 @@ pub fn convert(out_folder: &str, diff_folder: &str, workers: usize) -> anyhow::R
             continue;
         }
 
-        let new_name = convert_filename(&diff_path)?;
+        // check if conversion already exists
+        let entry_without_zst = if diff_path.extension().and_then(|e| e.to_str()) == Some("zst") {
+            diff_path.with_extension("")
+        } else {
+            diff_path.clone()
+        };
+        let new_name = convert_filename(&entry_without_zst)?;
         let out_path = Path::new(out_folder).join(new_name);
-        eprintln!("Convert {} to {}", diff_path.display(), out_path.display());
-        //TODO close metrics
-        apply(&out_path.as_path(), diff_path.as_path(), workers)?
+        if out_path.exists() {
+            eprintln!("Output file {} already exists, skipping conversion for {}", out_path.display(), diff_path.display());
+            continue;
+        }
+
+        let mut source_file_path = diff_path.clone();
+        // if entry is "*.diff.zst", decompress it to "*.diff"
+        if diff_path.extension().and_then(|e| e.to_str()) == Some("zst") {
+            let file_name = match diff_path.file_name().and_then(|s| s.to_str()) {
+                Some(s) => s,
+                None => return Err(anyhow::anyhow!("failed to get file name {}", diff_path.display())),
+            };
+            let stem = match file_name.strip_suffix(".zst") {
+                Some(s) => s,
+                None => return Err(anyhow::anyhow!("failed to remove suffix {}", diff_path.display())),
+            };
+            let out_path = Path::new(temp_folder).join(stem);
+            eprintln!("Decompressing {} to {}", diff_path.display(), out_path.display());
+            zstd::stream::copy_decode(&mut File::open(diff_path)?, &mut File::create(&out_path)?)?;
+            source_file_path = out_path;
+        }
+
+        let new_name = convert_filename(&source_file_path)?;
+        let out_path = Path::new(out_folder).join(new_name);
+        eprintln!("Convert {} to {}", source_file_path.display(), out_path.display());
+        apply(&out_path.as_path(), source_file_path.as_path(), workers)?
     }
 
     Ok(())

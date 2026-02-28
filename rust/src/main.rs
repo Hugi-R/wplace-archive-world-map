@@ -277,7 +277,11 @@ fn cmd_zst_bench(data_db: &str) -> anyhow::Result<()> {
 }
 
 fn cmd_diffconvert(out_folder: &str, diff_folder: &str, workers: usize) -> anyhow::Result<()> {
-    ingest_diff::convert(out_folder, diff_folder, workers)
+    let temp_folder = std::env::temp_dir().join("diffconvert_temp");
+    std::fs::create_dir_all(&temp_folder)?;
+    let res = ingest_diff::convert(out_folder, diff_folder, workers, temp_folder.to_str().unwrap());
+    std::fs::remove_dir_all(&temp_folder)?;
+    res
 }
 
 fn cmd_apgn(in_folder: &str, out_file: &str) -> anyhow::Result<()> {
