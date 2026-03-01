@@ -170,6 +170,7 @@ impl TileDB {
         data: &[u8],
         retries: usize,
     ) -> SqlResult<()> {
+        let mut err = rusqlite::Error::InvalidQuery; // Placeholder error
         for attempt in 0..retries {
             let mut stmt = self.conn.prepare_cached(
                 "INSERT INTO tiles (z, x, y, data) VALUES (?, ?, ?, ?)
@@ -179,9 +180,10 @@ impl TileDB {
             match stmt.execute(params![z, x, y, data]) {
                 Ok(_) => return Ok(()),
                 Err(e) => {
+                    err = e;
                     eprintln!(
                         "DB write error for tile ({}, {}, {}) (attempt {}/{}): {}",
-                        z, x, y, attempt + 1, retries, e
+                        z, x, y, attempt + 1, retries, err
                     );
                     if attempt < retries - 1 {
                         std::thread::sleep(Duration::from_millis(300));
@@ -189,7 +191,7 @@ impl TileDB {
                 }
             }
         }
-        Err(rusqlite::Error::InvalidQuery)
+        Err(err)
     }
 
     /// Get raw tile data from the database

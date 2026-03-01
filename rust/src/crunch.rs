@@ -207,6 +207,7 @@ pub fn apply(tiles: &Arc<DashMap<(u16, u16), CompressedImage>>, diff_path: &Path
                     
                 }
             }
+            diff_db.close().unwrap();
         });
         worker_handles.push(handle);
     }
@@ -219,6 +220,7 @@ pub fn apply(tiles: &Arc<DashMap<(u16, u16), CompressedImage>>, diff_path: &Path
     for entry in  index {
         tx.send(entry)?;
     }
+    diff_db.close()?;
 
     // Drop the sender to signal workers to exit
     drop(tx);
@@ -236,11 +238,11 @@ pub fn apply(tiles: &Arc<DashMap<(u16, u16), CompressedImage>>, diff_path: &Path
 
 fn save_tiles_to_db(tiles: &DashMap<(u16, u16), CompressedImage>, date: DateHours, current_file: &Path) -> anyhow::Result<PathBuf> {
     let mut target_db = TileDB::new(current_file, false)?;
-    target_db.put_version(date, current_file.to_string_lossy().as_ref())?;
+    target_db.put_version(date, current_file.to_string_lossy().as_ref()).unwrap(); // crash on failure
     for item in tiles.iter() {
         let (x, y) = item.key();
         let data = item.value();
-        target_db.update_history_tile(11, *x, *y, date, data)?;
+        target_db.update_history_tile(11, *x, *y, date, data).unwrap(); // crash on failure
     }
     let new_name = format!("w{}_{}.db", date.week(), date.0);
     let folder_name = Path::new(&current_file).parent();
@@ -252,11 +254,17 @@ fn save_tiles_to_db(tiles: &DashMap<(u16, u16), CompressedImage>, date: DateHour
     Ok(new_path)
 }
 
-fn crunch_tile(base_db: &mut TileDB, target_db: &mut TileDB, x: u16, y: u16) -> anyhow::Result<()> {
-    let base_history = match base_db.get_history_tile(11, x, y)? {
+fn crunch_tile(target_db: &mut TileDB, x: u16, y: u16) -> anyhow::Result<()> {
+    let base_history = match target_db.get_history_tile(11, x, y)? {
         Some(history) => history,
         None => return Ok(()), // no base tile, skip
     };
+
+    // we only crunch the tile if there is at least one diff, otherwise we can just keep the original tile as is
+    if base_history.imgs.len() <= 1 && base_history.imgs.contains_key(&DateHours::min()) {
+        return Ok(());
+    }
+
     let base_image = base_history.image(DateHours::max())?; // get the latest image from the history
     let base_compressed = base_image.to_compressed_bytes()?;
     // save the base image as the first entry in the history with the minimum date, so that future diffs can be applied on top of it
@@ -276,13 +284,15 @@ fn crunch_week(base_path: &Path, target_path: &Path, workers: usize) -> anyhow::
         metrics_clone.report_metrics();
     });
 
+    // rename base as target, we assume both are on the same disk (preferably RAM disk)
+    std::fs::rename(base_path, target_path)?;
+
     // Spawn workers
     let mut worker_handles = Vec::new();
     for _ in 0..workers {
         let rx = rx.clone();
         let metrics = metrics.clone();
 
-        let mut base_db = TileDB::new(base_path, true)?;
         let mut target_db = TileDB::new(target_path, false)?;
 
         let handle = std::thread::spawn(move || {
@@ -294,7 +304,7 @@ fn crunch_week(base_path: &Path, target_path: &Path, workers: usize) -> anyhow::
 
                 match job {
                     Ok((x, y)) => {
-                        crunch_tile(&mut base_db, &mut target_db, x, y).unwrap(); // crash on failure
+                        crunch_tile(&mut target_db, x, y).unwrap(); // crash on failure
                         metrics.record_success();
                     },
                     Err(_) => {
@@ -309,7 +319,7 @@ fn crunch_week(base_path: &Path, target_path: &Path, workers: usize) -> anyhow::
     }
 
     // Send jobs
-    let mut diff_db = TileDB::new(base_path, true)?;
+    let mut diff_db = TileDB::new(target_path, true)?;
     let index = diff_db.list_tiles(11)?; // zoom level 11
     println!("Index size: {}", index.len());
     metrics.add_total_job(index.len() as u64);
@@ -372,6 +382,18 @@ fn last_week_file(folder_path: &str) -> anyhow::Result<(DateHours, String)> {
     Ok((latest_date, latest_filename))
 }
 
+fn copy_file(current_file: &Path, out_folder: &Path, delete_old: bool) -> anyhow::Result<PathBuf> {
+    let current_basename = current_file.file_name().unwrap();
+    let out_file = out_folder.join(current_basename);
+    if !Path::exists(&out_file) {
+        std::fs::copy(current_file, &out_file)?;
+        if delete_old {
+            std::fs::remove_file(&current_file)?;
+        }
+    }
+    Ok(out_file)
+}
+
 pub fn  crunch_day(in_folder: &str, out_folder: &str, work_folder: &str, workers: usize) -> anyhow::Result<()>{
     println!("Crunching day diffs from {} to {}", in_folder, out_folder);
 
@@ -389,9 +411,25 @@ pub fn  crunch_day(in_folder: &str, out_folder: &str, work_folder: &str, workers
     let first_file_date = files.get(0).unwrap().0;
     let current_file = make_path(work_folder, first_file_date);
     if (from_date != DateHours::min()) && (first_file_date.week() != from_date.week()) {
+        // if new week
         let from_path = Path::new(out_folder).join(from_file);
         println!("First diff file is from week {}. Crunching base tiles into {}", first_file_date.week(), current_file.display());
-        crunch_week(&from_path, &current_file, workers)?;
+        let work_file = copy_file(&from_path, Path::new(work_folder), false)?;
+        crunch_week(&work_file, &current_file, workers)?;
+    } else {
+        // if same week, just copy the latest week file to the work folder
+        println!("First diff file is from week {}. Copying base week file {} to {}", first_file_date.week(), from_file, current_file.display());
+        let from_path = Path::new(out_folder).join(from_file.clone());
+        if !Path::exists(&current_file) {
+            std::fs::copy(&from_path, &current_file)?;
+        }
+        // and mark the old week file as backup
+        let backup_path = Path::new(out_folder).join(format!("{}.bak", from_file.clone()));
+        if !Path::exists(&backup_path) {
+            std::fs::rename(&from_path, &backup_path)?;
+        } else {
+            return Err(anyhow::anyhow!("Backup file {} already exists", backup_path.display()));
+        }
     }
 
     // apply each diff file to the in-memory hashmap, and save the result to a new week file when the week changes
@@ -411,13 +449,7 @@ pub fn  crunch_day(in_folder: &str, out_folder: &str, work_folder: &str, workers
             if date.week() != prev_date.week() {
                 println!("Week changed from {} to {}", prev_date.week(), date.week());
                 println!("Saving week file {} for week {}", current_file.display(), prev_date.week());
-                // copy week file to out_folder
-                let current_basename = Path::new(&current_file).file_name().unwrap();
-                let out_file = Path::new(out_folder).join(current_basename);
-                if !Path::exists(&out_file) {
-                    std::fs::copy(&current_file, &out_file)?;
-                    std::fs::remove_file(&current_file)?;
-                }
+                let out_file = copy_file(&current_file, Path::new(out_folder), false)?;
                 current_file = make_path(work_folder, date);
                 println!("Crunching new week file {} for week {}", current_file.display(), date.week());
                 crunch_week(&out_file, &current_file, workers)?;
@@ -432,5 +464,9 @@ pub fn  crunch_day(in_folder: &str, out_folder: &str, work_folder: &str, workers
         println!("tiles size after applying diff: {}", tiles.len());
         prev_date = date;
     }
+
+    // move the last file to the output folder
+    let out_file = copy_file(&current_file, Path::new(out_folder), true)?;
+    println!("Saved last file: {} ", out_file.display());
     Ok(())
 }

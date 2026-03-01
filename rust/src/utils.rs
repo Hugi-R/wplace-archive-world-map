@@ -183,7 +183,7 @@ pub fn init_img(x1: i64, y1: i64, x2: i64, y2: i64, background: u8) -> PalettedI
 
     let height = ((y2+1)-y1)*1000;
     let width = ((x2+1)-x1)*1000;
-    assert!(height < 20000 && width < 20000); // That's already 400MB of indices! Also few things will display a bigger image.
+    assert!((height*width) < (30000*30000)); // That's already 900MB of indices! Also few things will display a bigger image.
     PalettedImage { width: width as usize, height: height as usize, indices: vec![background; (width*height) as usize] }
 }
 
