@@ -272,25 +272,27 @@
       <button id="screenshot-btn" title="Take pixel perfect screenshot">Screenshot</button>
       <button id="video-btn" title="Take video">Video</button>
     </div>
-    <div id="stats">
-      <p>Downscale: <span id="downscale-stats">NA</span></p>
+    <div id="stats" style="z-index: 3; max-width: 300px; background: var(--panel-bg); padding: 10px; border-radius: 4px; box-shadow: var(--shadow-lg); font-size: 14px;">
       <p>Decompress: <span id="decompress-stats">NA</span></p>
       <p>Decompress Network: <span id="decompress-network-stats">NA</span></p>
       <p>Decompress Process: <span id="decompress-process-stats">NA</span></p>
     </div>
-  </div>
-    <div class="zoom-button-container">
-      <button class="zoom-button" title="Zoom In" onclick="zoomIn()">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" width="22px" height="22px" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-6">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-        </svg>
-      </button>
-      <button class="zoom-button" title="Zoom Out" onclick="zoomOut()">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-6">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14" />
-        </svg>
-      </button>
+    <div id="user-messages" style="z-index: 3; max-width: 300px; background: var(--panel-bg); padding: 10px; border-radius: 4px; box-shadow: var(--shadow-lg); font-size: 14px;">
+      <!-- User messages from Rust will appear here -->
     </div>
+  </div>
+  <div class="zoom-button-container">
+    <button class="zoom-button" title="Zoom In" onclick="zoomIn()">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" width="22px" height="22px" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-6">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+      </svg>
+    </button>
+    <button class="zoom-button" title="Zoom Out" onclick="zoomOut()">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-6">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14" />
+      </svg>
+    </button>
+  </div>
   <div id="transparency-toggle" style="position: absolute; bottom: 10px; left: 10px; z-index: 3;">
   <button id="toggle-transparency" title="Toggle art opacity" style="padding: 6px; font-size: 0px;">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" width="22" height="22" fill="currentColor">
@@ -303,7 +305,6 @@
   <script type="module">
     var wasmModule = null;
 
-    var metricsDownscale = [];
     var metricsDecompress = [];
     var metricsDecompressNetwork = [];
     var metricsDecompressProcess = [];
@@ -317,13 +318,9 @@
         const p90 = data[Math.floor(0.9 * data.length)];
         return { p10, p50, p90 };
       }
-      const downscalePercentiles = computePercentiles(metricsDownscale);
       const decompressPercentiles = computePercentiles(metricsDecompress);
       const decompressProcessPercentiles = computePercentiles(metricsDecompressProcess);
       const decompressNetworkPercentiles = computePercentiles(metricsDecompressNetwork);
-      if (downscalePercentiles) {
-        document.getElementById("downscale-stats").textContent = `P10=${downscalePercentiles.p10.toFixed(2)}, P50=${downscalePercentiles.p50.toFixed(2)}, P90=${downscalePercentiles.p90.toFixed(2)}`;
-      }
       if (decompressPercentiles) {
         document.getElementById("decompress-stats").textContent = `P10=${decompressPercentiles.p10.toFixed(2)}, P50=${decompressPercentiles.p50.toFixed(2)}, P90=${decompressPercentiles.p90.toFixed(2)}`;
       }
@@ -957,6 +954,7 @@
     }
 
     document.getElementById("screenshot-btn").onclick=async() => {
+      document.getElementById('user-messages').innerHTML = ""; // Clear previous messages
       try {
         await initWasm();
         const rect = map.getContainer().getBoundingClientRect();
@@ -988,6 +986,7 @@
     };
 
     document.getElementById("video-btn").onclick=async() => {
+      document.getElementById('user-messages').innerHTML = ""; // Clear previous messages
       try {
         await initWasm();
         const rect = map.getContainer().getBoundingClientRect();
@@ -1018,6 +1017,14 @@
         alert(`Failed to make video: ${e}`);
         console.error(e);
       }
+    };
+
+    window.log_user_message = async function(message) {
+      const logDiv = document.getElementById('user-messages');
+      const p = document.createElement('p');
+      p.textContent = message;
+      logDiv.appendChild(p);
+      return new Promise(resolve => setTimeout(resolve, 50)); // Small delay to ensure message is rendered before any heavy processing starts
     };
   </script>
 </body>

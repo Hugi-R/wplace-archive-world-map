@@ -18,6 +18,9 @@ extern "C" {
     // `log(..)`
     #[wasm_bindgen(js_namespace = console)]
     fn log(s: &str);
+
+    #[wasm_bindgen]
+    async fn log_user_message(s: &str);
 }
 
 macro_rules! console_log {
@@ -44,9 +47,13 @@ pub async fn wasm_screenshot(base_url: &str, version: u32, x1: i64, y1: i64, x2:
 
     let window = web_sys::window().unwrap();
 
+    let total_tiles = (x2-x1+1) * (y2-y1+1);
+    log_user_message(format!("Downloading {} tiles...", total_tiles).as_str()).await;
+
     for y in y1..(y2+1) {
         for x in x1..(x2+1) {
             let url = format!("{}/{}/11/{}/{}.zst", base_url, version.week(), x, y);
+            log_user_message(format!("Downloading {}", url).as_str()).await;
             let request = Request::new_with_str_and_init(&url, &opts)?;
             let resp_value = JsFuture::from(window.fetch_with_request(&request)).await?;
             assert!(resp_value.is_instance_of::<Response>());
@@ -84,12 +91,14 @@ pub async fn wasm_screenshot(base_url: &str, version: u32, x1: i64, y1: i64, x2:
     }
 
 
+    log_user_message("Download finish.").await;
+    log_user_message("Creating image...").await;
     let mut png: Vec<u8> = Vec::new();
     {
         image::paletted_to_png(&target, &mut png, true)
             .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to encode PNG: {}", e)))?;
     }
-
+    log_user_message("Done.").await;
     Ok(png)
 }
 
@@ -104,10 +113,14 @@ pub async fn wasm_video(base_url: &str, x1: i64, y1: i64, x2: i64, y2: i64, from
 
     let window = web_sys::window().unwrap();
 
+    let total_tiles = (x2-x1+1) * (y2-y1+1);
+    log_user_message(format!("Downloading {} tiles...", total_tiles).as_str()).await;
+
     let mut history:HashMap<(u16, u16), utils::TileHistory> = HashMap::new();
     for y in y1..(y2+1) {
         for x in x1..(x2+1) {
             let url = format!("{}/all/11/{}/{}.zst?from={}&to={}", base_url, x, y, from, to);
+            log_user_message(format!("Downloading {}", url).as_str()).await;
             let request = Request::new_with_str_and_init(&url, &opts)?;
             let resp_value = JsFuture::from(window.fetch_with_request(&request)).await?;
             assert!(resp_value.is_instance_of::<Response>());
@@ -131,9 +144,11 @@ pub async fn wasm_video(base_url: &str, x1: i64, y1: i64, x2: i64, y2: i64, from
         }
     }
 
+    log_user_message("Download finish.").await;
+    log_user_message("Creating video... (freezes browser tab, be patient)").await;
     let png = utils::apng_from_history(history, 200)
         .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to create APNG: {}", e)))?;
-
+    log_user_message("Done.").await;
     Ok(png)
 }
 
