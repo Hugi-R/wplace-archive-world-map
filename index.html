@@ -997,10 +997,13 @@
         const y1 = BigInt(lat2tileY(topLeftLngLat.lat, 11));
         const x2 = BigInt(lng2tileX(botRightLngLat.lng, 11));
         const y2 = BigInt(lat2tileY(botRightLngLat.lat, 11));
-        if (((x2-x1) * (y2-y1)) > 16) {
+        if (((x2-x1) * (y2-y1)) > (8*8)) {
           throw new Error("Animated PNG would be too big. Zoom in and try again.")
         }
-        const data = await wasmModule.wasm_video("diff", x1, y1, x2, y2);
+        const from = parseInt(wplaceVersion);
+        const to = 0xFFFFFFFF; // All versions (uint32 max) //TODO allow user to specify range
+        console.log(`Generating video for x=[${x1}, ${x2}] y=[${y1}, ${y2}] from version ${from} to ${to}`);
+        const data = await wasmModule.wasm_video("diff", x1, y1, x2, y2, from, to);
         const tar = new Blob([data], { type: 'image/png' });
         console.log(tar);
         const url = URL.createObjectURL(tar);

@@ -95,7 +95,7 @@ pub async fn wasm_screenshot(base_url: &str, version: u32, x1: i64, y1: i64, x2:
 
 #[cfg(feature = "wasm")]
 #[wasm_bindgen]
-pub async fn wasm_video(base_url: &str, x1: i64, y1: i64, x2: i64, y2: i64) -> Result<Vec<u8>, JsValue> {
+pub async fn wasm_video(base_url: &str, x1: i64, y1: i64, x2: i64, y2: i64, from: u32, to: u32) -> Result<Vec<u8>, JsValue> {
     use std::collections::HashMap;
     
     let opts = RequestInit::new();
@@ -107,7 +107,7 @@ pub async fn wasm_video(base_url: &str, x1: i64, y1: i64, x2: i64, y2: i64) -> R
     let mut history:HashMap<(u16, u16), utils::TileHistory> = HashMap::new();
     for y in y1..(y2+1) {
         for x in x1..(x2+1) {
-            let url = format!("{}/all/11/{}/{}.zst", base_url, x, y);
+            let url = format!("{}/all/11/{}/{}.zst?from={}&to={}", base_url, x, y, from, to);
             let request = Request::new_with_str_and_init(&url, &opts)?;
             let resp_value = JsFuture::from(window.fetch_with_request(&request)).await?;
             assert!(resp_value.is_instance_of::<Response>());
@@ -118,9 +118,8 @@ pub async fn wasm_video(base_url: &str, x1: i64, y1: i64, x2: i64, y2: i64) -> R
                     let jsvalue = JsFuture::from(resp.array_buffer()?).await?;
                     let data = Uint8Array::new(&jsvalue).to_vec();
                     if data.len() > 0 {
-                        let mut th =utils::TileHistory::from_bytes(x as u16, y as u16, &data)
+                        let th =utils::TileHistory::from_bytes(x as u16, y as u16, &data)
                             .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to decode tile history: {}", e)))?;
-                        th.imgs.remove(&DateHours::min()); // remove the image that start each week
                         history.insert((x as u16, y as u16), th);
                     }
                 },

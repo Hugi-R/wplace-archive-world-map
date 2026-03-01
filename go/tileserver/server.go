@@ -150,14 +150,21 @@ func (dbm *DatabaseManager) GetDateList() []uint32 {
 }
 
 // GetAllDiffs retrieves all diffs for a given tile across all versions
-func (dbm *DatabaseManager) GetAllDiffs(z, x, y int, writer http.ResponseWriter) error {
+func (dbm *DatabaseManager) GetAllDiffs(z, x, y int, writer http.ResponseWriter, from, to uint32) error {
 	versions := make([]uint32, 0, len(dbm.stmts))
+	from_week := from / (24 * 7)
+	to_week := to / (24 * 7)
+	// version is already in week unit
 	for version := range dbm.stmts {
+		if version < from_week || version > to_week {
+			continue
+		}
 		versions = append(versions, version)
 	}
 	sort.Slice(versions, func(i, j int) bool {
 		return versions[i] < versions[j]
 	})
+	is_first := true
 	for _, version := range versions {
 		stmt, _ := dbm.stmts[version]
 		var diffData []byte
@@ -166,9 +173,9 @@ func (dbm *DatabaseManager) GetAllDiffs(z, x, y int, writer http.ResponseWriter)
 			log.Printf("Error querying diff for version %d: %v", version, err)
 			continue
 		}
-		// Skip part with DateHours=0
+		// Skip part with DateHours=0 (except first loop)
 		skip := 0
-		if len(diffData) > 8 {
+		if !is_first && len(diffData) > 8 {
 			dateHours := binary.LittleEndian.Uint32(diffData[:4])
 			if dateHours == 0 {
 				length := binary.LittleEndian.Uint32(diffData[4:8])
@@ -180,6 +187,7 @@ func (dbm *DatabaseManager) GetAllDiffs(z, x, y int, writer http.ResponseWriter)
 			log.Printf("Error writing diff for version %d: %v", version, err)
 			return err
 		}
+		is_first = false
 	}
 	return nil
 }
@@ -389,8 +397,8 @@ func (ts *TileServer) serveAllDiff(w http.ResponseWriter, r *http.Request) {
 	zStr := vars["z"]
 	xStr := vars["x"]
 	yStr := vars["y"]
-	from := strings.TrimSpace(r.URL.Query().Get("from"))
-	to := strings.TrimSpace(r.URL.Query().Get("to"))
+	fromStr := strings.TrimSpace(r.URL.Query().Get("from"))
+	toStr := strings.TrimSpace(r.URL.Query().Get("to"))
 
 	z, x, y, err := ParseTileCoords(zStr, xStr, yStr)
 	if err != nil {
@@ -402,8 +410,28 @@ func (ts *TileServer) serveAllDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	from := uint32(0)
+	if fromStr != "" {
+		f, err := strconv.ParseUint(fromStr, 10, 32)
+		if err != nil {
+			http.Error(w, "invalid from date", http.StatusBadRequest)
+			return
+		}
+		from = uint32(f)
+	}
+	to := uint32(0xFFFFFFFF)
+	if toStr != "" {
+		t, err := strconv.ParseUint(toStr, 10, 32)
+		if err != nil {
+			http.Error(w, "invalid to date", http.StatusBadRequest)
+			return
+		}
+		to = uint32(t)
+	}
+	println("Serving diff for tile", z, x, y, "from", from, "to", to)
+
 	// Set appropriate headers
-	etag := fmt.Sprintf(`"alldiff-%s-%s-from%d-to%s"`, GetTileKey(z, x, y), from, to)
+	etag := fmt.Sprintf(`"alldiff-%s-%s-from%d-to%s"`, GetTileKey(z, x, y), fromStr, toStr)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Cache-Control", "public, max-age=3600") // Cache for 1 hour
 	w.Header().Set("ETag", etag)
@@ -416,7 +444,7 @@ func (ts *TileServer) serveAllDiff(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Write tile data
-	ts.dbManager.GetAllDiffs(z, x, y, w)
+	ts.dbManager.GetAllDiffs(z, x, y, w, from, to)
 }
 
 func (ts *TileServer) serveIndex(w http.ResponseWriter, _ *http.Request) {
