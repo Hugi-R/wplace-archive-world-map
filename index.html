@@ -259,7 +259,7 @@
       </form>
     </div>
     <div id="overlay-toggle">
-      <label><input type="checkbox" id="toggle-tile-overlay"> Show tile overlay</label>
+      <label><input type="checkbox" id="toggle-tile-overlay"> Show tiles</label>
     </div>
     <div id="encart">
       <button id="encart-close" aria-label="Close encart" title="Close encart">&times;</button>
@@ -267,8 +267,7 @@
         <p>Explore Wplace world map archives at any zoom level, starting from August 2025.</p>
         <p>Right-click the map for more tools</p>
         <p>Each zoom level halves the image resolution. The pixel is chosen by majority. Deleted pixels can linger up to a week.</p>
-        <p>Data kindly provided by <a href="https://github.com/murolem/wplace-archives" target="_blank" rel="noopener noreferrer">murolem</a>, and previously <a href="https://www.reddit.com/user/OkInfluence36/" target="_blank" rel="noopener noreferrer">u/OkInfluence36</a>.</p>
-        <p>This site is hosted on my own hardware and Cloudflare free tier, with enough storage to last one year of daily archives!</p>
+        <p>Data kindly provided by <a href="https://github.com/murolem/wplace-archives" target="_blank" rel="noopener noreferrer">murolem</a>.</p>
         <p>Report bugs on <a href="https://github.com/Hugi-R/wplace-archive-world-map" target="_blank" rel="noopener noreferrer">GitHub</a> or to <a href="https://www.reddit.com/user/EralyonDotnet/" target="_blank" rel="noopener noreferrer">u/EralyonDotnet</a>.</p>
       </div>
     </div>
@@ -619,6 +618,7 @@
     menu.style.zIndex = '10';
     menu.innerHTML = `
       <div id="download-tile">Download tile</div>
+      <div id="download-overlay">Download overlay</div>
       <div id="go-wplace-live">Go wplace.live</div>
     `;
     document.body.appendChild(menu);
@@ -687,6 +687,108 @@
         alert('Tile not found in cache. Maybe the tile is empty?');
       }
     });
+
+    // Helper: Convert blob to base64 data URL
+    function blobToDataUrl(blob) {
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.readAsDataURL(blob);
+      });
+    }
+
+    // Download overlay handler
+    document.getElementById('download-overlay').addEventListener('click', async function() {
+      if (!lastTileCoords) return;
+      const { z, x, y } = lastTileCoords;
+      
+      alert('Wplace overlay currently has issues and is not pixel perfect. Use Blue Marble in the meantime.');
+
+      if (typeof caches === 'undefined') {
+        alert('Caching is not supported in this browser. Downloading tiles not available.');
+        return;
+      }
+
+      if (z != 11) {
+        alert('Overlay download only available for zoom level 11. Please zoom in to level 11 and try again.');
+        return;
+      }
+
+      // Get tile from cache
+      const cache = await caches.open("merged-tiles");
+      const cacheKey = `tile-${wplaceVersion}-${z}-${x}-${y}`;
+      const cachedResponse = await cache.match(cacheKey);
+      if (cachedResponse) {
+        const blob = await cachedResponse.blob();
+        
+        // Convert blob to base64 data URL
+        const dataUrl = await blobToDataUrl(blob);
+        
+        // Calculate bounds from tile coordinates
+        const west = tile2lng(x, z);
+        const east = tile2lng(x + 1, z);
+        const north = tile2lat(y, z);
+        const south = tile2lat(y + 1, z);
+        
+        // Create filename
+        const filename = `${wplaceVersion}-${z}-${x}-${y}`;
+        
+        // Create JSON object
+        const tileData = {
+          id: `eralyon-${filename}`,
+          schemaVersion: "1",
+          name: `${filename}.png`,
+          opacity: 1,
+          image: {
+            dataUrl: dataUrl,
+            width: 1000,
+            height: 1000
+          },
+          bounds: {
+            north: north,
+            south: south,
+            west: west,
+            east: east
+          },
+          colorMetric: "lab",
+          dithering: false,
+          order: 0,
+          locked: false,
+          hasPlaced: true,
+          visible: true
+        };
+        
+        // Download as JSON
+        const jsonString = JSON.stringify(tileData, null, 2);
+        const jsonBlob = new Blob([jsonString], { type: 'application/json' });
+        const url = URL.createObjectURL(jsonBlob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${filename}.wplace`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        menu.style.display = 'none';    
+      } else {
+        alert('Tile not found in cache. Maybe the tile is empty?');
+      }
+    });
+
+    function lng2tileX(lng, z) {
+      return Math.floor((lng + 180) / 360 * Math.pow(2, z));
+    }
+    function lat2tileY(lat, z) {
+      const rad = lat * Math.PI / 180;
+      return Math.floor((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * Math.pow(2, z));
+    }
+    function tile2lng(x, z) {
+      return x / Math.pow(2, z) * 360 - 180;
+    }
+    function tile2lat(y, z) {
+      const n = Math.PI - 2 * Math.PI * y / Math.pow(2, z);
+      return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+    }
 
     document.getElementById('go-wplace-live').addEventListener('click', function() {
       if (!lastClickCoords) return;
@@ -762,20 +864,6 @@
       setOverlayVisibility();
 
       // --- Draw Tile Overlay ---
-      function lng2tileX(lng, z) {
-        return Math.floor((lng + 180) / 360 * Math.pow(2, z));
-      }
-      function lat2tileY(lat, z) {
-        const rad = lat * Math.PI / 180;
-        return Math.floor((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * Math.pow(2, z));
-      }
-      function tile2lng(x, z) {
-        return x / Math.pow(2, z) * 360 - 180;
-      }
-      function tile2lat(y, z) {
-        const n = Math.PI - 2 * Math.PI * y / Math.pow(2, z);
-        return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
-      }
 
       function drawTileOverlay() {
         if (!overlayToggle.checked) return;
