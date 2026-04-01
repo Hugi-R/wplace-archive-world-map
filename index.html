@@ -438,27 +438,25 @@
         fetch(`/tiles/${vDiff}/${z}/${x}/${y}.png`)
       ]);
 
+      let buffer = null;
       if ((tile1.status != 200) && (tile2.status != 200)) {
         throw new Error("Both tile fetch error");
+      } else if ((tile1.status == 200) && (tile2.status != 200)) {
+        // only the base
+        buffer = await tile1.arrayBuffer();
+      } else if ((tile1.status != 200) && (tile2.status == 200)) {
+        // only the diff
+        buffer = await tile2.arrayBuffer();
+      } else {
+        // Merge tiles
+        const [blob1, blob2] = await Promise.all([
+          tile1.blob(),
+          tile2.blob()
+        ]);
+        
+        const merged = await mergeTileBlobs(blob1, blob2);
+        buffer = await merged.arrayBuffer();
       }
-      if ((tile1.status == 200) && (tile2.status != 200)) {
-        // Return only the base
-        const buffer = await tile1.arrayBuffer();
-        return {data: buffer};
-      }
-      if ((tile1.status != 200) && (tile2.status == 200)) {
-        // Return only the diff
-        const buffer = await tile2.arrayBuffer();
-        return {data: buffer};
-      }
-      const [blob1, blob2] = await Promise.all([
-        tile1.blob(),
-        tile2.blob()
-      ]);
-      
-      // Merge tiles
-      const merged = await mergeTileBlobs(blob1, blob2);
-      const buffer = await merged.arrayBuffer();
 
       if (cache) {
         // Store in cache
