@@ -6,127 +6,89 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"time"
 )
 
-// GithubRelease is a small helper type for the GitHub API response we use.
-type GithubRelease struct {
-	Name             string           `json:"name"`
-	ID               int              `json:"id"`
-	UpdatedAt        time.Time        `json:"updated_at"`
-	Assets           []GithubAsset    `json:"assets"`
-	Datetime         time.Time        // parsed from Name
-	ProcessedVersion ProcessedVersion // derived from Datetime
+// HFFile represents a file entry from the Hugging Face API response.
+type HFFile struct {
+	Path     string `json:"path"`
+	Size     int64  `json:"size"`
+	Type     string `json:"type"`
+	Datetime time.Time
+	ProcessedVersion ProcessedVersion
 }
 
-type GithubAsset struct {
-	Name               string `json:"name"`
-	BrowserDownloadURL string `json:"browser_download_url"`
+// HFDownloadURL builds the direct download URL for a file from a Hugging Face bucket.
+func HFDownloadURL(bucketURL, filePath string) string {
+	// bucketURL is like https://huggingface.co/buckets/Hugi-R/wplace-archives/tree/full
+	// filePath is like full/full_2026-06-03T22-11-00Z.db
+	// We need: https://huggingface.co/buckets/Hugi-R/wplace-archives/resolve/full/full_2026-06-03T22-11-00Z.db
+	base := strings.Split(bucketURL, "/tree/")[0]
+	return fmt.Sprintf("%s/resolve/%s", base, filePath)
 }
 
-// getGithubReleases fetches releases for a GitHub repo given a releases URL like
-// https://github.com/owner/repo/releases
-func GetGithubReleases(releasesURL string, multiPage bool) ([]GithubRelease, error) {
-	if releasesURL == "" {
-		return nil, fmt.Errorf("empty releases URL")
+// GetHFFiles fetches the list of files from a Hugging Face bucket.
+// bucketURL is like https://huggingface.co/buckets/Hugi-R/wplace-archives/tree/full
+func GetHFFiles(bucketURL string) ([]HFFile, error) {
+	if bucketURL == "" {
+		return nil, fmt.Errorf("empty bucket URL")
 	}
-	u, err := url.Parse(releasesURL)
+
+	// Parse the bucket URL to extract owner, name, and path
+	// URL format: https://huggingface.co/buckets/owner/name/tree/path
+	// We need to build: https://huggingface.co/api/buckets/owner/name/tree/path
+	apiURL := strings.Replace(bucketURL, "/buckets/", "/api/buckets/", 1)
+	apiURL = strings.Replace(apiURL, "/tree/", "/tree/", 1)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("invalid releases URL: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-	if len(parts) < 2 {
-		return nil, fmt.Errorf("cannot determine owner/repo from %s", releasesURL)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch Hugging Face files: %w", err)
 	}
-	owner := parts[0]
-	repo := parts[1]
+	defer resp.Body.Close()
 
-	apiBase := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases", owner, repo)
-	client := &http.Client{Timeout: 15 * time.Second}
-
-	// optional token to avoid strict unauthenticated rate limits
-	token := os.Getenv("GITHUB_TOKEN")
-
-	allReleases := make([]GithubRelease, 0)
-	perPage := 100
-	page := 1
-
-	for {
-		api := fmt.Sprintf("%s?per_page=%d&page=%d", apiBase, perPage, page)
-		req, err := http.NewRequest("GET", api, nil)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create request: %w", err)
-		}
-		req.Header.Set("Accept", "application/vnd.github.v3+json")
-		if token != "" {
-			req.Header.Set("Authorization", "token "+token)
-		}
-
-		resp, err := client.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("failed to fetch GitHub releases: %w", err)
-		}
-
-		// read Link header before closing body
-		linkHeader := resp.Header.Get("Link")
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			return nil, fmt.Errorf("GitHub API returned status %d: %s", resp.StatusCode, string(body))
-		}
-
-		var releases []GithubRelease
-		dec := json.NewDecoder(resp.Body)
-		if err := dec.Decode(&releases); err != nil {
-			resp.Body.Close()
-			return nil, fmt.Errorf("failed to parse GitHub releases response: %w", err)
-		}
-		resp.Body.Close()
-
-		if len(releases) == 0 {
-			break
-		}
-
-		allReleases = append(allReleases, releases...)
-
-		// If not multi-page, stop after first page.
-		if !multiPage {
-			break
-		}
-		// Else:
-		// If Link header present, use it to determine if there is a next page.
-		// Otherwise, stop when fewer than perPage items returned.
-		if linkHeader == "" {
-			if len(releases) < perPage {
-				break
-			}
-			page++
-			continue
-		}
-		if !hasNextLink(linkHeader) {
-			break
-		}
-		page++
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("Hugging Face API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Keep only releases last updated more than one hour ago to avoid incomplete releases
-	oneHourAgo := time.Now().Add(-1 * time.Hour)
-	filtered := make([]GithubRelease, 0, len(allReleases))
-	for _, r := range allReleases {
-		if r.UpdatedAt.Before(oneHourAgo) {
-			filtered = append(filtered, r)
+	var files []HFFile
+	dec := json.NewDecoder(resp.Body)
+	if err := dec.Decode(&files); err != nil {
+		return nil, fmt.Errorf("failed to parse Hugging Face files response: %w", err)
+	}
+
+	// Filter to only include files in the requested directory (e.g., "full/")
+	// Extract the target directory from the bucket URL
+	targetDir := ""
+	if idx := strings.Index(bucketURL, "/tree/"); idx != -1 {
+		targetDir = bucketURL[idx+6:]
+		if !strings.HasSuffix(targetDir, "/") {
+			targetDir += "/"
 		}
 	}
 
-	// Parse Datetime and ProcessedVersion for each release
+	filtered := make([]HFFile, 0)
+	for _, f := range files {
+		if f.Type == "file" && strings.HasPrefix(f.Path, targetDir) {
+			filtered = append(filtered, f)
+		}
+	}
+
+	// Parse Datetime and ProcessedVersion for each file
 	for i := range filtered {
-		dt, err := parseReleaseTime(filtered[i].Name)
+		dt, err := parseHFFileName(filtered[i].Path)
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse release time for %s: %w", filtered[i].Name, err)
+			return nil, fmt.Errorf("failed to parse file time for %s: %w", filtered[i].Path, err)
 		}
 		filtered[i].Datetime = dt
 		filtered[i].ProcessedVersion = ProcessedVersionFromDate(dt)
@@ -135,33 +97,29 @@ func GetGithubReleases(releasesURL string, multiPage bool) ([]GithubRelease, err
 	return filtered, nil
 }
 
-// hasNextLink returns true if the Link header contains a rel="next" link.
-func hasNextLink(link string) bool {
-	// Example Link header:
-	// <https://api.github.com/...&page=2>; rel="next", <https://api.github.com/...&page=5>; rel="last"
-	parts := strings.Split(link, ",")
-	for _, p := range parts {
-		if strings.Contains(p, `rel="next"`) {
-			return true
-		}
+// parseHFFileName converts a file path like "full/full_2026-06-03T22-11-00Z.db" into a time.Time
+func parseHFFileName(path string) (time.Time, error) {
+	// Extract filename from path
+	filename := path
+	if idx := strings.LastIndex(path, "/"); idx != -1 {
+		filename = path[idx+1:]
 	}
-	return false
-}
 
-// parseReleaseTime converts a release name like "world-2025-11-01T11-47-58.104Z" into a time.Time
-func parseReleaseTime(name string) (time.Time, error) {
-	// Remove optional prefix (e.g., "world-")
-	s := strings.TrimPrefix(name, "world-")
+	// Remove prefix (e.g., "full_") and suffix (e.g., ".db")
+	s := strings.TrimSuffix(filename, ".db")
+	if idx := strings.Index(s, "_"); idx != -1 {
+		s = s[idx+1:]
+	}
 
-	// Find 'T' and convert the two dashes between hour/minute and minute/second back to colons
+	// Find 'T' and convert the dashes between hour/minute/second back to colons
 	tIdx := strings.Index(s, "T")
 	if tIdx == -1 {
-		return time.Time{}, fmt.Errorf("invalid release time format: %s", s)
+		return time.Time{}, fmt.Errorf("invalid file time format: %s", s)
 	}
 	datePart := s[:tIdx]
 	timePart := s[tIdx+1:]
-	// timePart looks like 11-47-58.104Z or similar; replace first two '-' with ':'
-	// Only replace the first two occurrences
+
+	// timePart looks like 22-11-00Z; replace '-' with ':'
 	replaced := timePart
 	for i := 0; i < 2; i++ {
 		idx := strings.Index(replaced, "-")
@@ -171,7 +129,7 @@ func parseReleaseTime(name string) (time.Time, error) {
 		replaced = replaced[:idx] + ":" + replaced[idx+1:]
 	}
 	full := datePart + "T" + replaced
-	// Try RFC3339 parse
+
 	t, err := time.Parse(time.RFC3339, full)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("failed to parse time %s: %w", full, err)
@@ -179,7 +137,7 @@ func parseReleaseTime(name string) (time.Time, error) {
 	return t, nil
 }
 
-// ProcessedVersionFromDate store version in the format vMajor.Minor where:
+// ProcessedVersion store version in the format vMajor.Minor where:
 // Major: week number since 1st Jan 2025
 // Minor: hour in the week (from 0 to 167) (zero-padded to 3 digits)
 // IsBase: true if base version (no minor when converted to string)
@@ -242,14 +200,14 @@ func ProcessedFileName(version ProcessedVersion, datetime time.Time) string {
 }
 
 type Planner struct {
-	doneFolder   string
-	ghReleaseUrl string
+	doneFolder string
+	hfBucketURL string
 }
 
 type Job struct {
 	isDiff        bool
 	base          string
-	archive       GithubRelease
+	archive       HFFile
 	processedFile string
 }
 
@@ -339,12 +297,12 @@ func (p Planner) ListArchiveDones() (*ArchivesDones, error) {
 	return MakeArchiveDones(entries), nil
 }
 
-func MakeJobs(releases []GithubRelease, archivesDones *ArchivesDones) ([]Job, error) {
-	// Sort releases by Datetime ascending (oldest first)
-	for i := 0; i < len(releases); i++ {
-		for j := i + 1; j < len(releases); j++ {
-			if releases[j].Datetime.Before(releases[i].Datetime) {
-				releases[i], releases[j] = releases[j], releases[i]
+func MakeJobs(files []HFFile, archivesDones *ArchivesDones) ([]Job, error) {
+	// Sort files by Datetime ascending (oldest first)
+	for i := 0; i < len(files); i++ {
+		for j := i + 1; j < len(files); j++ {
+			if files[j].Datetime.Before(files[i].Datetime) {
+				files[i], files[j] = files[j], files[i]
 			}
 		}
 	}
@@ -352,7 +310,7 @@ func MakeJobs(releases []GithubRelease, archivesDones *ArchivesDones) ([]Job, er
 	jobs := make([]Job, 0)
 	newDays := make(map[time.Time]bool)
 	newBases := make(map[int]string)
-	for _, archive := range releases {
+	for _, archive := range files {
 		// skip already done days
 		day := TimeAsDay(archive.Datetime)
 		if _, ok := newDays[day]; ok {
@@ -398,60 +356,68 @@ func MakeJobs(releases []GithubRelease, archivesDones *ArchivesDones) ([]Job, er
 	return jobs, nil
 }
 
-// PlanAll creates jobs for all available releases, filtering out those already done.
+// PlanAll creates jobs for all available files, filtering out those already done.
 func (p Planner) PlanAll() []Job {
 	archiveDone, err := p.ListArchiveDones()
 	if err != nil {
 		log.Fatalf("Failed to list archive dones: %v", err)
 	}
 
-	releases, err := GetGithubReleases(p.ghReleaseUrl, true)
+	files, err := GetHFFiles(p.hfBucketURL)
 	if err != nil {
-		log.Fatalf("Failed to get GitHub releases: %v", err)
+		log.Fatalf("Failed to get Hugging Face files: %v", err)
 	}
-	if len(releases) == 0 {
-		log.Fatalf("No releases found")
+	if len(files) == 0 {
+		log.Fatalf("No files found")
 	}
 
-	jobs, err := MakeJobs(releases, archiveDone)
+	jobs, err := MakeJobs(files, archiveDone)
 	if err != nil {
 		log.Fatalf("Failed to make jobs: %v", err)
 	}
 	return jobs
 }
 
-// PlanDaily creates job for latest page of release, filtering out those already done.
+// PlanDaily creates job for latest page of files, filtering out those already done.
 func (p Planner) PlanDaily() []Job {
 	archiveDone, err := p.ListArchiveDones()
 	if err != nil {
 		log.Fatalf("Failed to list archive dones: %v", err)
 	}
 
-	releases, err := GetGithubReleases(p.ghReleaseUrl, false)
+	files, err := GetHFFiles(p.hfBucketURL)
 	if err != nil {
-		log.Fatalf("Failed to get GitHub releases: %v", err)
+		log.Fatalf("Failed to get Hugging Face files: %v", err)
 	}
-	if len(releases) == 0 {
-		log.Fatalf("No releases found")
+	if len(files) == 0 {
+		log.Fatalf("No files found")
 	}
 
-	jobs, err := MakeJobs(releases, archiveDone)
+	jobs, err := MakeJobs(files, archiveDone)
 	if err != nil {
 		log.Fatalf("Failed to make jobs: %v", err)
 	}
 	return jobs
 }
 
-// PlanLatest creates a job for the latest available release. Regardless of whether it's done or not.
+// PlanLatest creates a job for the latest available file. Regardless of whether it's done or not.
 func (p Planner) PlanLatest() []Job {
-	releases, err := GetGithubReleases(p.ghReleaseUrl, false)
+	files, err := GetHFFiles(p.hfBucketURL)
 	if err != nil {
-		log.Fatalf("Failed to get GitHub releases: %v", err)
+		log.Fatalf("Failed to get Hugging Face files: %v", err)
 	}
-	if len(releases) == 0 {
-		log.Fatalf("No releases found")
+	if len(files) == 0 {
+		log.Fatalf("No files found")
 	}
-	latest := releases[0]
+
+	// Find the latest file by datetime
+	latest := files[0]
+	for _, f := range files[1:] {
+		if f.Datetime.After(latest.Datetime) {
+			latest = f
+		}
+	}
+
 	job := Job{
 		isDiff:        false,
 		archive:       latest,

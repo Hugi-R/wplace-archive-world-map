@@ -225,6 +225,8 @@ func Ingest(in, out, base string, workers int) error {
 		reader = &ReaderFolder{}
 	} else if strings.HasSuffix(in, ".tar.gz") || strings.HasSuffix(in, ".tgz") {
 		reader = &ReaderTarGz{}
+	} else if strings.HasSuffix(in, ".db") {
+		reader = &ReaderSqlite{}
 	} else {
 		return fmt.Errorf("unsupported input format: %s", in)
 	}

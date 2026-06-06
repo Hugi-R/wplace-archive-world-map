@@ -8,47 +8,20 @@ import (
 	"net/http"
 	"os"
 	"path"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/Hugi-R/wplace-archive-world-map/merger"
 	"github.com/Hugi-R/wplace-archive-world-map/store"
 )
 
-// Download downloads the archive for the given GithubRelease into the workfolder and returns the path to the downloaded file.
-// The GithubRelease is composed of multiple assets.
-// The assets are a tar.gz archive splited into multiple parts (e.g. .tar.gz.aa, .tar.gz.ab, ...).
-// All parts are downloaded into a single tar.gz file.
-func Download(release GithubRelease, workFolder string) (string, error) {
-	// collect and sort candidate parts
-	parts := []struct {
-		name string
-		url  string
-	}{}
-	for _, a := range release.Assets {
-		name := a.Name
-		url := a.BrowserDownloadURL
-		// /!\ accept full .tar.gz and split parts like .tar.gz.aa, .tar.gz.ab, ...
-		if strings.Contains(name, ".tar.gz") {
-			parts = append(parts, struct {
-				name string
-				url  string
-			}{name: name, url: url})
-		}
+// Download downloads the sqlite file for the given HFFile into the workfolder and returns the path to the downloaded file.
+func Download(file HFFile, bucketURL, workFolder string) (string, error) {
+	downloadURL := HFDownloadURL(bucketURL, file.Path)
+	if downloadURL == "" {
+		return "", fmt.Errorf("empty download URL for file %s", file.Path)
 	}
-	if len(parts) == 0 {
-		return "", fmt.Errorf("no tar.gz parts found in release %v", release)
-	}
-	sort.Slice(parts, func(i, j int) bool { return parts[i].name < parts[j].name })
 
-	// derive output filename from first part (trim the split suffix)
-	first := parts[0].name
-	idx := strings.Index(first, ".tar.gz")
-	outName := first
-	if idx != -1 {
-		outName = first[:idx+len(".tar.gz")]
-	}
+	outName := path.Base(file.Path)
 	outPath := path.Join(workFolder, outName)
 
 	if err := os.MkdirAll(workFolder, 0o755); err != nil {
@@ -61,21 +34,19 @@ func Download(release GithubRelease, workFolder string) (string, error) {
 	}
 	defer outFile.Close()
 
-	for _, p := range parts {
-		log.Printf("Downloading %s -> %s", p.url, outPath)
-		resp, err := http.Get(p.url)
-		if err != nil {
-			return "", fmt.Errorf("download %s: %w", p.url, err)
-		}
-		if resp.StatusCode < 200 || resp.StatusCode > 299 {
-			resp.Body.Close()
-			return "", fmt.Errorf("download %s: bad status %d", p.url, resp.StatusCode)
-		}
-		_, err = io.Copy(outFile, resp.Body)
+	log.Printf("Downloading %s -> %s", downloadURL, outPath)
+	resp, err := http.Get(downloadURL)
+	if err != nil {
+		return "", fmt.Errorf("download %s: %w", downloadURL, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		resp.Body.Close()
-		if err != nil {
-			return "", fmt.Errorf("copying %s: %w", p.url, err)
-		}
+		return "", fmt.Errorf("download %s: bad status %d", downloadURL, resp.StatusCode)
+	}
+	_, err = io.Copy(outFile, resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return "", fmt.Errorf("copying %s: %w", downloadURL, err)
 	}
 
 	return outPath, nil
@@ -121,7 +92,7 @@ func MoveFile(src, dst string) error {
 
 // ExecPlan executes the given plan of jobs.
 // Download, ingest, merge, move, for each job.
-func ExecPlan(plan []Job, workFolder, doneFolder string) error {
+func ExecPlan(plan []Job, bucketURL, workFolder, doneFolder string) error {
 	tmpProcessedFolder := path.Join(workFolder, "processed")
 	archivesFolder := path.Join(workFolder, "archives")
 	for _, p := range plan {
@@ -132,8 +103,8 @@ func ExecPlan(plan []Job, workFolder, doneFolder string) error {
 		}
 		out := path.Join(tmpProcessedFolder, p.processedFile)
 
-		log.Printf("Processing archive %s", p.archive.Name)
-		archive, err := Download(p.archive, archivesFolder)
+		log.Printf("Processing archive %s", p.archive.Path)
+		archive, err := Download(p.archive, bucketURL, archivesFolder)
 		if err != nil {
 			return fmt.Errorf("download archive: %w", err)
 		}
@@ -152,7 +123,7 @@ func ExecPlan(plan []Job, workFolder, doneFolder string) error {
 		if err := MoveFile(out, path.Join(doneFolder, p.processedFile)); err != nil {
 			return fmt.Errorf("moving processed file: %w", err)
 		}
-		log.Printf("Done processing archive %s in %s", p.archive.Name, time.Since(start))
+		log.Printf("Done processing archive %s in %s", p.archive.Path, time.Since(start))
 	}
 	return nil
 }
@@ -174,7 +145,7 @@ func main() {
 
 	url := os.Getenv("WPLACE_ARCHIVES_URL")
 	if url == "" {
-		url = "https://github.com/murolem/wplace-archives/releases"
+		url = "https://huggingface.co/buckets/Hugi-R/wplace-archives/tree/full"
 	}
 	workFolder := os.Getenv("WPLACE_WORK_FOLDER")
 	if workFolder == "" {
@@ -186,8 +157,8 @@ func main() {
 	}
 
 	planner := Planner{
-		doneFolder:   doneFolder,
-		ghReleaseUrl: url,
+		doneFolder:  doneFolder,
+		hfBucketURL: url,
 	}
 
 	var plan []Job
@@ -203,7 +174,7 @@ func main() {
 	}
 
 	DisplayPlan(plan)
-	err := ExecPlan(plan, workFolder, doneFolder)
+	err := ExecPlan(plan, url, workFolder, doneFolder)
 	if err != nil {
 		log.Fatalf("ExecPlan failed: %v", err)
 	}

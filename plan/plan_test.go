@@ -85,7 +85,7 @@ func PV(vStr string) ProcessedVersion {
 }
 
 func TestMakeJobs(t *testing.T) {
-	archives := []GithubRelease{
+	archives := []HFFile{
 		{Datetime: time.Date(2025, 1, 9, 00, 0, 0, 0, time.UTC), ProcessedVersion: PV("v1.048")},
 		{Datetime: time.Date(2025, 1, 8, 12, 0, 0, 0, time.UTC), ProcessedVersion: PV("v1.036")},
 		{Datetime: time.Date(2025, 1, 8, 00, 0, 0, 0, time.UTC), ProcessedVersion: PV("v1.024")},
